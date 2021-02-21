@@ -1,0 +1,3 @@
+volumes/app/var/cache/dev/
+volumes/app/var/log/dev.log
+volumes/db/var/log/

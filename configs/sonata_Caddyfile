@@ -1,0 +1,10 @@
+:80 {
+	root * /app/public/
+	php_fastcgi php-fpm:9000
+	file_server
+    @static {
+        file
+        path *.ico *.css *.js *.gif *.jpg *.jpeg *.png *.svg *.woff *.txt *.mjs *.json
+    }
+    header @static Cache-Control "public, max-age=864000;"
+}

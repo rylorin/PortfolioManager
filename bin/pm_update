@@ -1,0 +1,3 @@
+#!/bin/sh
+docker exec `docker ps | grep PortfolioManager_php-fpm|cut -f 1 -d ' '` ./bin/console app:import:yahoo
+# docker exec --interactive --tty `docker ps | grep PortfolioManager_php-fpm|cut -f 1 -d ' '` ./bin/console app:import:yahoo
