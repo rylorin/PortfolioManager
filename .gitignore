@@ -2,4 +2,6 @@
 /volumes/db/
 /ryl.diff
 /ryl.txt
+/ryl2.diff
 .DS_Store
+__pycache__
