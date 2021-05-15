@@ -30,10 +30,10 @@ from ibapi.tag_value import TagValue
 
 from ibapi.account_summary_tags import *
 
-from ContractSamples import ContractSamples
-from OrderSamples import OrderSamples
+# from ContractSamples import ContractSamples
+# from OrderSamples import OrderSamples
 
-from Program import TestApp
+from Testbed.Program import TestApp
 
 def SetupLogger():
     # RYL
@@ -96,6 +96,7 @@ class Trader(TestApp):
         self.cashAvailableRatio = 1/100
         self.portfolioLoaded = False
         self.ordersLoaded = False
+        self.lastRunDate = time.time()
 
     def getDbConnection(self):
         if self.db == None:
@@ -280,34 +281,130 @@ class Trader(TestApp):
             print('sellNakedPuts freeSpace:')
             print(freeSpace)
 
-    def adjustCash(self, val: float):
+    def adjustCash(self):
         if (not self.portfolioLoaded) or (not self.ordersLoaded):
             return
         print('adjustCash')
+
         self.getDbConnection()
         c = self.db.cursor()
-        benchmarkCashAvailable = float(val)
-        t = (self.benchmarkSymbol, )
+
+        # how much cash do we have?
+        t = (self.account, 'EUR', )
         c.execute(
-            'SELECT contract.price FROM contract WHERE contract.symbol = ?',
+            'SELECT SUM(balance.quantity / currency.rate) FROM portfolio, balance, currency WHERE balance.portfolio_id = portfolio.id AND portfolio.account = ? AND balance.currency = currency.currency AND currency.base = ?',
+            t)
+        r = c.fetchone()
+        total_cash = float(r[0])
+        print('total cash:', total_cash)
+
+        # how much do we need to cover ALL short puts?
+        t = (self.account, 'OPT', 'P', 'EUR', )
+        c.execute(
+            'SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) FROM position, portfolio, contract, option, currency WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? AND position.quantity < 0 AND position.contract_id = contract.id AND contract.secType = ? AND position.contract_id = option.id AND option.call_or_put = ? AND contract.currency = currency.currency AND currency.base = ?',
+            t)
+        r = c.fetchone()
+        naked_puts_engaged = float(r[0])
+        print('total naked put:', naked_puts_engaged)
+
+        # how much do we need to cover ITM short puts?
+        t = (self.account, 'OPT', 'P', 'EUR', )
+        c.execute(
+            'SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) ' \
+            'FROM position, portfolio, contract, option, currency, contract stock ' \
+            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND position.quantity < 0 ' \
+            ' AND position.contract_id = contract.id ' \
+            ' AND contract.secType = ? ' \
+            ' AND position.contract_id = option.id ' \
+            ' AND option.call_or_put = ? ' \
+            ' AND option.stock_id = stock.id ' \
+            ' AND stock.price < option.strike ' \
+            ' AND contract.currency = currency.currency ' \
+            ' AND currency.base = ?',
+            t)
+        r = c.fetchone()
+        naked_puts_amount = float(r[0])
+        print('needed to secure naked put:', naked_puts_amount)
+
+        # open Sell order quantity
+        t = (self.account, self.benchmarkSymbol, 'STK', 'SELL', )
+        c.execute(
+            'SELECT SUM(total_qty) '\
+            'FROM open_order, portfolio, contract ' \
+            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND open_order.contract_id = contract.id AND contract.symbol = ? AND contract.secType = ? ' \
+            ' AND open_order.action_type = ?',
+            t)
+        r = c.fetchone()
+        if r[0]:
+            benchmark_on_sale = float(r[0])
+        else:
+            benchmark_on_sale = 0
+        print('benchmark_on_sale:', benchmark_on_sale)
+        # open Buy order quantity
+        t = (self.account, self.benchmarkSymbol, 'STK', 'BUY', )
+        c.execute(
+            'SELECT SUM(total_qty) '\
+            'FROM open_order, portfolio, contract ' \
+            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND open_order.contract_id = contract.id AND contract.symbol = ? AND contract.secType = ? ' \
+            ' AND open_order.action_type = ?',
+            t)
+        r = c.fetchone()
+        if r[0]:
+            benchmark_on_buy = float(r[0])
+        else:
+            benchmark_on_buy = 0
+        print('benchmark_on_buy:', benchmark_on_buy)
+
+        # benchmark price in base
+        t = (self.benchmarkSymbol, 'EUR', )
+        c.execute(
+            'SELECT (contract.price / currency.rate) ' \
+            'FROM contract, currency WHERE contract.symbol = ?' \
+            ' AND contract.currency = currency.currency ' \
+            ' AND currency.base = ?',
             t)
         r = c.fetchone()
         benchmarkPrice = float(r[0])
-        # retirer les ordres d'achat en cours du cash available
-        toBuy = benchmarkCashAvailable / benchmarkPrice
+        print('benchmarkPrice in base:', benchmarkPrice)
+
+        to_adjust = (total_cash + naked_puts_amount) / benchmarkPrice
+        print('to_adjust:', to_adjust)
+
+        if (to_adjust >= 1):
+            to_adjust -= benchmark_on_buy
+            # Cancel all Sell orders
+            t = (self.account, self.benchmarkSymbol, 'STK', 'SELL', )
+        elif (to_adjust <= -1):
+            to_adjust += benchmark_on_sale
+            # Cancel all Buy orders
+            t = (self.account, self.benchmarkSymbol, 'STK', 'BUY', )
+        c.execute(
+            'SELECT open_order.order_id '\
+            'FROM open_order, portfolio, contract ' \
+            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND open_order.contract_id = contract.id AND contract.symbol = ? AND contract.secType = ? ' \
+            ' AND open_order.action_type = ?',
+            t)
+        for r in c:
+            print('canceling order:', r[0])
+            self.cancelOrder(int(r[0]))
+        print('to_adjust after adjustement:', to_adjust)
         contract = Contract()
         contract.symbol = self.benchmarkSymbol
         contract.secType = "STK"
         contract.currency = "USD"
         contract.exchange = "SMART"
-        if (benchmarkCashAvailable > (self.NAV * self.cashAvailableRatio)):
-            print('toBuy: ', math.floor(toBuy))
-            self.placeOrder(self.nextOrderId(), contract, TraderOrder.Midprice("BUY", math.floor(toBuy), 1))
-        elif (toBuy < -1):
-            print('to sell: ', math.ceil(toBuy))
-            self.placeOrder(self.nextOrderId(), contract, TraderOrder.Midprice("SELL", math.ceil(toBuy), 1000000))
+        if (to_adjust >= 1):
+            print('toBuy: ', math.floor(to_adjust))
+            self.placeOrder(self.nextOrderId(), contract, TraderOrder.Midprice("BUY", math.floor(to_adjust), 1))
+        elif (to_adjust < 0):
+            print('to sell: ', math.ceil(-to_adjust))
+            self.placeOrder(self.nextOrderId(), contract, TraderOrder.Midprice("SELL", math.ceil(-to_adjust), 1000000))
+
         c.close()
-        self.db.commit()
 
     def sellCoveredCallsIfPossible(self, contract: Contract, position: float,
                         marketPrice: float, marketValue: float,
@@ -384,8 +481,8 @@ class Trader(TestApp):
                 c.execute('INSERT INTO balance(quantity, portfolio_id, currency) VALUES (?, ?, ?)', t)
             c.close()
             self.db.commit()
-            if (self.NAV != None) and (key == 'CashBalance') and (currency == self.benchmarkCurrency):
-                self.adjustCash(val)
+#            if (self.NAV != None) and (key == 'CashBalance') and (currency == self.benchmarkCurrency):
+#                self.adjustCash(val)
         elif (key == 'ExchangeRate') and (currency != 'BASE'):
             # update exchange rate
             c = self.db.cursor()
@@ -497,6 +594,16 @@ class Trader(TestApp):
         self.db.commit()
     # ! [orderstatus]
 
+    @iswrapper
+    # ! [updateaccounttime]
+    def updateAccountTime(self, timeStamp: str):
+        super().updateAccountTime(timeStamp)
+        seconds = time.time()
+        if (seconds > (self.lastRunDate + (1 * 60))):
+            self.lastRunDate = seconds
+            self.adjustCash()
+    # ! [updateaccounttime]
+
     def start(self):
         if self.started:
             return
@@ -515,10 +622,10 @@ class Trader(TestApp):
     @iswrapper
     # ! [managedaccounts]
     def managedAccounts(self, accountsList: str):
-        super().managedAccounts(accountsList)
         if self.account:
             return
-        self.account = accountsList.split(",")[0]
+        super().managedAccounts(accountsList)
+
         self.benchmarkSymbol = 'VT'
         self.benchmarkCurrency = 'USD'
         self.clearPortfolioBalances(self.account)
@@ -533,8 +640,16 @@ class Trader(TestApp):
         # ! [reqids]
         # Requesting all open orders
         # ! [reqallopenorders]
-        self.reqAllOpenOrders()
+#        self.reqAllOpenOrders()
         # ! [reqallopenorders]
+        # Taking over orders to be submitted via TWS
+        # ! [reqautoopenorders]
+#        self.reqAutoOpenOrders(True)
+        # ! [reqautoopenorders]
+        # Requesting this API client's orders
+        # ! [reqopenorders]
+        self.reqOpenOrders()
+        # ! [reqopenorders]
     # ! [managedaccounts]
 
 def main():
