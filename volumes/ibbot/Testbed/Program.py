@@ -509,8 +509,8 @@ class TestApp(TestWrapper, TestClient):
     def updateAccountValue(self, key: str, val: str, currency: str,
                            accountName: str):
         super().updateAccountValue(key, val, currency, accountName)
-        print("UpdateAccountValue. Key:", key, "Value:", val,
-              "Currency:", currency, "AccountName:", accountName)
+#        print("UpdateAccountValue. Key:", key, "Value:", val,
+ #             "Currency:", currency, "AccountName:", accountName)
     # ! [updateaccountvalue]
 
     @iswrapper
@@ -521,11 +521,11 @@ class TestApp(TestWrapper, TestClient):
                         realizedPNL: float, accountName: str):
         super().updatePortfolio(contract, position, marketPrice, marketValue,
                                 averageCost, unrealizedPNL, realizedPNL, accountName)
-        print("UpdatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
-              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
-              "MarketValue:", marketValue, "AverageCost:", averageCost,
-              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
-              "AccountName:", accountName)
+#        print("UpdatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
+ #             contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+  #            "MarketValue:", marketValue, "AverageCost:", averageCost,
+   #           "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+    #          "AccountName:", accountName)
     # ! [updateportfolio]
 
     @iswrapper
@@ -633,7 +633,7 @@ class TestApp(TestWrapper, TestClient):
     # ! [marketdatatype]
     def marketDataType(self, reqId: TickerId, marketDataType: int):
         super().marketDataType(reqId, marketDataType)
-        print("MarketDataType. ReqId:", reqId, "Type:", marketDataType)
+#        print("MarketDataType. ReqId:", reqId, "Type:", marketDataType)
     # ! [marketdatatype]
 
     @printWhenExecuting
@@ -756,41 +756,42 @@ class TestApp(TestWrapper, TestClient):
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float,
                   attrib: TickAttrib):
         super().tickPrice(reqId, tickType, price, attrib)
-        print("TickPrice. TickerId:", reqId, "tickType:", tickType,
-              "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
-              "PastLimit:", attrib.pastLimit, end=' ')
-        if tickType == TickTypeEnum.BID or tickType == TickTypeEnum.ASK:
-            print("PreOpen:", attrib.preOpen)
-        else:
-            print()
+#        print("TickPrice. TickerId:", reqId, "tickType:", tickType,
+ #             "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
+  #            "PastLimit:", attrib.pastLimit, end=' ')
+   #     if tickType == TickTypeEnum.BID or tickType == TickTypeEnum.ASK:
+    #        print("PreOpen:", attrib.preOpen)
+     #   else:
+      #      print()
     # ! [tickprice]
 
     @iswrapper
     # ! [ticksize]
     def tickSize(self, reqId: TickerId, tickType: TickType, size: int):
         super().tickSize(reqId, tickType, size)
-        print("TickSize. TickerId:", reqId, "TickType:", tickType, "Size:", size)
+#        print("TickSize. TickerId:", reqId, "TickType:", tickType, "Size:", size)
     # ! [ticksize]
 
     @iswrapper
     # ! [tickgeneric]
     def tickGeneric(self, reqId: TickerId, tickType: TickType, value: float):
         super().tickGeneric(reqId, tickType, value)
-        print("TickGeneric. TickerId:", reqId, "TickType:", tickType, "Value:", value)
+        if tickType!= 49:
+            print("TickGeneric. TickerId:", reqId, "TickType:", tickType, "Value:", value)
     # ! [tickgeneric]
 
     @iswrapper
     # ! [tickstring]
     def tickString(self, reqId: TickerId, tickType: TickType, value: str):
         super().tickString(reqId, tickType, value)
-        print("TickString. TickerId:", reqId, "Type:", tickType, "Value:", value)
+#        print("TickString. TickerId:", reqId, "Type:", tickType, "Value:", value)
     # ! [tickstring]
 
     @iswrapper
     # ! [ticksnapshotend]
     def tickSnapshotEnd(self, reqId: int):
         super().tickSnapshotEnd(reqId)
-        print("TickSnapshotEnd. TickerId:", reqId)
+#        print("TickSnapshotEnd. TickerId:", reqId)
     # ! [ticksnapshotend]
 
     @iswrapper
@@ -1092,9 +1093,9 @@ class TestApp(TestWrapper, TestClient):
                                           expirations: SetOfString, strikes: SetOfFloat):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                   underlyingConId, tradingClass, multiplier, expirations, strikes)
-        print("SecurityDefinitionOptionParameter.",
-              "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier,
-              "Expirations:", expirations, "Strikes:", str(strikes))
+#        print("SecurityDefinitionOptionParameter.",
+ #             "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier,
+  #            "Expirations:", expirations, "Strikes:", str(strikes))
     # ! [securityDefinitionOptionParameter]
 
     @iswrapper
@@ -1111,11 +1112,11 @@ class TestApp(TestWrapper, TestClient):
                               gamma: float, vega: float, theta: float, undPrice: float):
         super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta,
                                       optPrice, pvDividend, gamma, vega, theta, undPrice)
-        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType,
-              "TickAttrib:", tickAttrib,
-              "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:",
-              optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega,
-              "Theta:", theta, "UnderlyingPrice:", undPrice)
+#        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType,
+ #             "TickAttrib:", tickAttrib,
+  #            "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:",
+   #           optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega,
+    #          "Theta:", theta, "UnderlyingPrice:", undPrice)
 
     # ! [tickoptioncomputation]
 
@@ -1211,7 +1212,8 @@ class TestApp(TestWrapper, TestClient):
     # ! [contractdetails]
     def contractDetails(self, reqId: int, contractDetails: ContractDetails):
         super().contractDetails(reqId, contractDetails)
-        printinstance(contractDetails)
+#        print("contractDetails. ReqId:", reqId, end=' ')
+#        printinstance(contractDetails)
     # ! [contractdetails]
 
     @iswrapper
@@ -1225,7 +1227,7 @@ class TestApp(TestWrapper, TestClient):
     # ! [contractdetailsend]
     def contractDetailsEnd(self, reqId: int):
         super().contractDetailsEnd(reqId)
-        print("ContractDetailsEnd. ReqId:", reqId)
+#        print("ContractDetailsEnd. ReqId:", reqId)
     # ! [contractdetailsend]
 
     @iswrapper
@@ -1328,8 +1330,8 @@ class TestApp(TestWrapper, TestClient):
     def tickReqParams(self, tickerId:int, minTick:float,
                       bboExchange:str, snapshotPermissions:int):
         super().tickReqParams(tickerId, minTick, bboExchange, snapshotPermissions)
-        print("TickReqParams. TickerId:", tickerId, "MinTick:", minTick,
-              "BboExchange:", bboExchange, "SnapshotPermissions:", snapshotPermissions)
+#        print("TickReqParams. TickerId:", tickerId, "MinTick:", minTick,
+ #             "BboExchange:", bboExchange, "SnapshotPermissions:", snapshotPermissions)
     # ! [tickReqParams]
 
     @iswrapper
