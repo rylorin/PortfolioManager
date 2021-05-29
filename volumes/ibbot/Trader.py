@@ -3,6 +3,7 @@ Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is su
  and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable.
 """
 
+from ibapi.scanner import NO_ROW_NUMBER_SPECIFIED
 import os.path
 import time
 import logging
@@ -191,6 +192,18 @@ class Trader(TestApp):
     @staticmethod
     def normalizeSymbol(symbol):
         return symbol.rstrip('d').replace(' ', '-').replace('.T', '')
+
+    def clearRequestId(self, reqId: int):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (reqId, )
+        c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id = ?', t)
+        c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
+        r = c.fetchone()
+        count = int(r[0])
+        c.close()
+        self.db.commit()
+        return count
 
     def findOrCreateStockContract(self, contract: Contract):
         self.getDbConnection()
@@ -768,16 +781,17 @@ class Trader(TestApp):
             return
         print('rollOptionIfNeeded')
 
+    @printWhenExecuting
     def findWheelSymbolsInfo(self):
         seconds = time.time()
         # process one symbol every 1 minute
         if (seconds < self.nextWheelProcess):
             return
-        print('running findWheelSymbolsInfo.')
         print(
             'self.wheelSymbolsProcessing:', self.wheelSymbolsProcessing,
-            'self.wheelSymbolsExpirations:', self.wheelSymbolsExpirations,
-            'self.wheelSymbolsProcessingStrikes:', self.wheelSymbolsProcessingStrikes,
+            'self.wheelSymbolsExpirations:', len(self.wheelSymbolsExpirations), self.wheelSymbolsExpirations,
+            'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes), self.wheelSymbolsProcessingStrikes,
+            'self.wheelSymbols:', self.wheelSymbols,
             'self.wheelSymbolsProcessed', self.wheelSymbolsProcessed)
         # Don't come back too often. As I am afraid that 1 secs is too small regarding granularity, I put 2
         self.nextWheelProcess = seconds + 2
@@ -786,10 +800,6 @@ class Trader(TestApp):
             # self.wheelSymbolsProcessingSymbol: stock symbol being processed
             # self.wheelSymbolsProcessingStrikes: strikes list associated to process
             # self.wheelSymbolsProcessingExpirations: expirations list associated to process, one at a time
-            print(
-                'self.wheelSymbolsProcessing:', self.wheelSymbolsProcessing,
-                'self.wheelSymbolsExpirations:', len(self.wheelSymbolsExpirations),
-                'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes))
             today = date.today()
             exp = None
             while len(self.wheelSymbolsExpirations) > 0:
@@ -799,29 +809,44 @@ class Trader(TestApp):
                     break
                 exp = None
             if exp != None:
-                print(
-                    'expiration:', expiration)
                 price = self.getSymbolPrice(self.wheelSymbolsProcessing)
-                for strike in self.wheelSymbolsProcessingStrikes:
-                    #print(exp, len(self.wheelSymbolsProcessingStrikes), (price * 0.8), strike, (price * 1.2))
-                    if ((price * 0.8) < strike) and (strike < (price * 1.2)):
-                        contract = Contract()
-                        contract.exchange = 'SMART'
-                        contract.secType = 'OPT'
-                        contract.symbol = self.wheelSymbolsProcessing
-                        contract.strike = strike
-                        contract.lastTradeDateOrContractMonth = exp
-                        contract.right = 'C'
-                        self.reqContractDetails(self.getNextTickerId(), contract)
+                num_requests = 0
+                # atm: first strike index above price
+                for atm in range(len(self.wheelSymbolsProcessingStrikes)):
+                    if self.wheelSymbolsProcessingStrikes[atm] >= price:
+                        break
+#                print('atm:', atm)
+                contract = Contract()
+                contract.exchange = 'SMART'
+                contract.secType = 'OPT'
+                contract.lastTradeDateOrContractMonth = exp
+                contract.symbol = self.wheelSymbolsProcessing
+                # process at most xx strikes in each direction
+                for i in range(49):
+                    if (atm-i) >= 0:
+                        contract.strike = self.wheelSymbolsProcessingStrikes[atm-i]
                         contract.right = 'P'
                         self.reqContractDetails(self.getNextTickerId(), contract)
-                        #print('submitted reqContractDetails for 2 options')
-                # IB API gives 11 seconds snapshots
-                self.nextWheelProcess += 11
+                        num_requests += 1
+                    if (atm+i) < len(self.wheelSymbolsProcessingStrikes):
+                        contract.strike = self.wheelSymbolsProcessingStrikes[atm+i]
+                        contract.right = 'C'
+                        self.reqContractDetails(self.getNextTickerId(), contract)
+                        num_requests += 1
+                    # and no more than 10% distance
+                    if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.9)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.1)):
+                        break
+                # IB API gives 11 seconds snapshots, and add 2 for safety
+                self.nextWheelProcess = seconds + 11 + 2
+                print(num_requests, 'reqContractDetails submitted')
             else:
+                # we are finished with this symbol
                 self.wheelSymbolsProcessed.append(self.wheelSymbolsProcessing)
                 self.wheelSymbolsProcessing = None
-                self.wheelSymbolsProcessingStrikes = None 
+                self.wheelSymbolsProcessingStrikes = []
+                # immediately start with next one
+                self.nextWheelProcess = 0
+                self.findWheelSymbolsInfo()
         elif len(self.wheelSymbols) > 0:
             self.wheelSymbolsProcessingSymbol = self.wheelSymbols.pop()
             contract = Contract()
@@ -833,11 +858,12 @@ class Trader(TestApp):
             self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
         else:
             print('findWheelSymbolsInfo. All done!')
+            # we are done for 60 minutes
+            self.nextWheelProcess = seconds + (60 * 60)
+            self.optionContractsAvailable = True
+            # Then start again
             self.wheelSymbols = self.wheelSymbolsProcessed
             self.wheelSymbolsProcessed = []
-            # we are done for 60 minutes
-            self.nextWheelProcess += (60 * 60)
-            self.optionContractsAvailable = True
 
     """
     IB API wrappers
@@ -849,15 +875,11 @@ class Trader(TestApp):
         super().error(reqId, errorCode, errorString)
         print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
         if errorCode == 200:
-            if errorString == 'No security definition has been found for the request':
-                self.getDbConnection()
-                c = self.db.cursor()
-                t = (reqId, )
-                c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id = ?', t)
-                c.close()
-                self.db.commit()
-            else:
-                print('error. unexpected error string:', errorString)
+            # 'No security definition has been found for the request':
+            self.clearRequestId(reqId)
+        elif errorCode == 162:
+            # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
+            self.clearRequestId(reqId)
     # ! [error] self.XreqId2nErr[reqId] += 1
 
     @iswrapper
@@ -922,26 +944,42 @@ class Trader(TestApp):
             pass
         else:
             print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
-
     # ! [tickoptioncomputation]
 
     @iswrapper
     # ! [ticksnapshotend]
     def tickSnapshotEnd(self, reqId: int):
         super().tickSnapshotEnd(reqId)
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (reqId, )
-        c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id = ?', t)
-        c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
-        r = c.fetchone()
-        count = int(r[0])
-        c.close()
-        self.db.commit()
+        count = self.clearRequestId(reqId)
         if (count == 0):
+            # continue data fetching if no more running requests
             self.nextWheelProcess = 0
             self.findWheelSymbolsInfo()
     # ! [ticksnapshotend]
+
+    @iswrapper
+    # ! [historicaldata]
+    def historicalData(self, reqId:int, bar: BarData):
+        super().historicalData(reqId, bar)
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (bar.average, reqId, )
+        c.execute(
+            'UPDATE stock '
+            ' SET Historical_Volatility = ? '
+            ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
+            t)
+        c.close()
+        self.db.commit()
+    # ! [historicaldata]
+
+    @iswrapper
+    # ! [historicaldataend]
+    def historicalDataEnd(self, reqId: int, start: str, end: str):
+        super().historicalDataEnd(reqId, start, end)
+        count = self.clearRequestId(reqId)
+        self.findWheelSymbolsInfo()
+    # ! [historicaldataend]
 
     @iswrapper
     # ! [securityDefinitionOptionParameter]
@@ -954,10 +992,19 @@ class Trader(TestApp):
             print("SecurityDefinitionOptionParameter.",
                 "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier,
                 "Expirations:", expirations, "Strikes:", str(strikes))
-            self.wheelSymbolsExpirations = expirations
-            self.wheelSymbolsProcessingStrikes = strikes
+            self.wheelSymbolsExpirations = sorted(expirations)
+            self.wheelSymbolsProcessingStrikes = sorted(strikes)
             self.wheelSymbolsProcessing = tradingClass
     # ! [securityDefinitionOptionParameter]
+
+    @iswrapper
+    # ! [securityDefinitionOptionParameterEnd]
+    def securityDefinitionOptionParameterEnd(self, reqId: int):
+        super().securityDefinitionOptionParameterEnd(reqId)
+        # Just got options information, we should be able to start processing immediately
+        self.nextWheelProcess = 0
+        self.findWheelSymbolsInfo()
+    # ! [securityDefinitionOptionParameterEnd]
 
     @iswrapper
     # ! [updateaccountvalue]
@@ -1112,17 +1159,13 @@ class Trader(TestApp):
                 'WHERE contract.con_id = ?', t)
         c.close()
         self.db.commit()
-        print('contractDetails. reqId:', reqId, 'contract:', contractDetails.contract, 'saved reqMktData req id:', nextReqId)
-        self.reqMktData(nextReqId, contractDetails.contract, "104,106", True, False, [])
+        print('contractDetails. reqId:', reqId, 'contract:', contractDetails.contract, 'saved reqMktData id:', nextReqId)
+        if contractDetails.contract.secType == 'STK':
+            self.reqHistoricalData(nextReqId, contractDetails.contract, "",
+                "1 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
+        elif contractDetails.contract.secType == 'OPT':
+            self.reqMktData(nextReqId, contractDetails.contract, "", True, False, [])
     # ! [contractdetails]
-
-    @iswrapper
-    # ! [updateaccounttime]
-    def updateAccountTime(self, timeStamp: str):
-        super().updateAccountTime(timeStamp)
-        self.findWheelSymbolsInfo()
-        self.adjustCash()
-    # ! [updateaccounttime]
 
     @iswrapper
     # ! [managedaccounts]
@@ -1134,11 +1177,16 @@ class Trader(TestApp):
             super().managedAccounts(accountsList)
             self.benchmarkSymbol = 'VT'
             self.nakedPutsRatio = 0.5
-            self.wheelSymbols = [ 'PFSI', 'CCL', 'MGM' ]
-            self.wheelSymbolsProcessed = []
+            self.wheelSymbols = [
+                'SPY'
+               # , 'AAPL', 'MSFT',
+#                'SPG', 'XOM', 'TME', 'FXI', 'IQ', 'KMI', 'RSX', 'CCL', 'MGM',
+                #'PFSI', 'PSEC'
+                ]
             self.wheelSymbolsProcessing = None
-            self.wheelSymbolsProcessingStrikes = None
-            self.wheelSymbolsExpirations = None
+            self.wheelSymbolsProcessingStrikes = []
+            self.wheelSymbolsExpirations = []
+            self.wheelSymbolsProcessed = []
 
             self.lastCashAdjust = 0
             self.lastNakedPutsSale = 0
@@ -1156,6 +1204,14 @@ class Trader(TestApp):
             self.reqIds(-1)
             self.reqOpenOrders()
     # ! [managedaccounts]
+
+    @iswrapper
+    # ! [updateaccounttime]
+    def updateAccountTime(self, timeStamp: str):
+        super().updateAccountTime(timeStamp)
+        self.findWheelSymbolsInfo()
+        self.adjustCash()
+    # ! [updateaccounttime]
 
     """
     Main Program
