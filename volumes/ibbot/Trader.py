@@ -1,18 +1,14 @@
 """
-Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
- and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable.
+TBD
 """
 
 from ibapi.scanner import NO_ROW_NUMBER_SPECIFIED
-import os.path
 import time
-import logging
-import datetime
-from datetime import timedelta
 from datetime import date
-import argparse
+import datetime
 import sqlite3
 import math
+from functools import cmp_to_key
 
 from ibapi import wrapper
 from ibapi import utils
@@ -34,78 +30,9 @@ from ibapi.tag_value import TagValue
 
 from ibapi.account_summary_tags import *
 
-# from ContractSamples import ContractSamples
-# from OrderSamples import OrderSamples
-
 from Testbed.Program import printWhenExecuting
 from Testbed.Program import TestApp
-
-from Testbed.ContractSamples import ContractSamples
-
-def SetupLogger():
-    # RYL
-    if os.path.exists("../db/var/log"):
-        logfile = time.strftime("../db/var/log/pyibapi.%Y%m%d_%H%M%S.log")
-    else:
-        if not os.path.exists("log"):
-            os.makedirs("log")
-        logfile = time.strftime("log/pyibapi.%y%m%d_%H%M%S.log")
-
-    time.strftime("pyibapi.%Y%m%d_%H%M%S.log")
-
-    recfmt = '(%(threadName)s) %(asctime)s.%(msecs)03d %(levelname)s %(filename)s:%(lineno)d %(message)s'
-
-    timefmt = '%y%m%d_%H:%M:%S'
-
-    # logging.basicConfig( level=logging.DEBUG,
-    #                    format=recfmt, datefmt=timefmt)
-    # RYL logging.basicConfig(filename=time.strftime("log/pyibapi.%y%m%d_%H%M%S.log"),
-    logging.basicConfig(filename=logfile,
-                        filemode="w",
-                        level=logging.INFO,
-                        format=recfmt, datefmt=timefmt)
-    logger = logging.getLogger()
-    console = logging.StreamHandler()
-    console.setLevel(logging.ERROR)
-    logger.addHandler(console)
-#    print("SetupLogger done.")
-
-class TraderOrder:
-
-    @staticmethod
-    def Order():
-        order = Order()
-        order.tif = "DAY"
-        order.transmit = False
-        return order
-
-    """ <summary>
-	#/ A Midprice order is designed to split the difference between the bid and ask prices, and fill at the current midpoint of
-	#/ the NBBO or better. Set an optional price cap to define the highest price (for a buy order) or the lowest price (for a sell
-	#/ order) you are willing to accept. Requires TWS 975+. Smart-routing to US stocks only.
-    </summary>"""
-    @staticmethod
-    def Midprice(action:str, quantity:float, priceCap:float):
-        #! [midprice]
-        order = TraderOrder.Order()
-        order.action = action
-        order.orderType = "MIDPRICE"
-        order.totalQuantity = quantity
-        order.lmtPrice = priceCap # optional
-        #! [midprice]
-        return order
-
-    @staticmethod
-    def BuyBenchmark(quantity:float):
-        order = TraderOrder.Midprice("BUY", quantity, 1)
-        order.transmit = True
-        return order
-
-    @staticmethod
-    def SellBenchmark(quantity:float):
-        order = TraderOrder.Midprice("SELL", quantity, 1000000)
-        order.transmit = True
-        return order
+from TraderOrder import TraderOrder
 
 class Trader(TestApp):
 
@@ -115,10 +42,11 @@ class Trader(TestApp):
         self.account = None
         self.portfolioNAV = None
         self.benchmarkSymbol = None
-        self.cashAvailableRatio = 1/100
         self.portfolioLoaded = False
         self.ordersLoaded = False
         self.optionContractsAvailable = False
+        # for testing
+        self.optionContractsAvailable = True
         self.lastCashAdjust = None
         self.lastNakedPutsSale = None
         self.nextTickerId = 1024
@@ -456,47 +384,57 @@ class Trader(TestApp):
         return getBaseToCurrencyRatio
 
     """
-    Get stock positions information
+    Get positions information (stock)
     """
 
-    def getPortfolioStocksValue(self, account: str):
+    def getPortfolioStocksValue(self, account: str, stock: str):
         self.getDbConnection()
         c = self.db.cursor()
         t = (account, 'STK', )
-        c.execute(
-            'SELECT SUM(position.quantity * contract.price / currency.rate) ' \
+        sql = 'SELECT SUM(position.quantity * contract.price / currency.rate) ' \
             'FROM position, portfolio, contract, currency ' \
             'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
             ' AND position.contract_id = contract.id ' \
             ' AND contract.secType = ? ' \
             ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency',
-            t)
+            ' AND currency.base = portfolio.base_currency'
+        if stock:
+            t += (stock, )
+            sql += ' AND contract.symbol = ?'
+        c.execute(sql, t)
         r = c.fetchone()
-        getPortfolioStocksValue = float(r[0])
+        if r[0]:
+            getPortfolioStocksValue = float(r[0])
+        else:
+            getPortfolioStocksValue = 0
         c.close()
         print('getPortfolioStocksValue:', getPortfolioStocksValue)
         return getPortfolioStocksValue
 
     """
-    Get options positions information
+    Get positions information (options)
     """
 
-    def getPortfolioOptionsValue(self, account: str):
+    def getPortfolioOptionsValue(self, account: str, stock: str):
         self.getDbConnection()
         c = self.db.cursor()
         t = (account, 'OPT', )
-        c.execute(
-            'SELECT SUM(position.quantity * contract.price * option.multiplier / currency.rate) ' \
-            'FROM position, portfolio, contract, option, currency ' \
+        sql = 'SELECT SUM(position.quantity * contract.price * option.multiplier / currency.rate) ' \
+            'FROM position, portfolio, contract, option, currency, contract stock_contract ' \
             'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
             ' AND position.contract_id = contract.id ' \
             ' AND contract.secType = ? AND position.contract_id = option.id ' \
             ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency',
-            t)
+            ' AND currency.base = portfolio.base_currency' \
+            ' AND stock_contract.id = option.stock_id'
+        if stock:
+            t += (stock, )
+            sql += ' AND stock_contract.symbol = ?'
         r = c.fetchone()
-        getPortfolioOptionsValue = float(r[0])
+        if r:
+            getPortfolioOptionsValue = float(r[0])
+        else:
+            getPortfolioOptionsValue = 0
         c.close()
         print('getPortfolioOptionsValue:', getPortfolioOptionsValue)
         return getPortfolioOptionsValue
@@ -518,9 +456,12 @@ class Trader(TestApp):
             ' AND option.stock_id = stock.id AND stock.symbol = ?',
             t)
         r = c.fetchone()
-        getNakedPutAmount = float(r[0])
+        if r[0] != None:
+            getNakedPutAmount = float(r[0])
+        else:
+            getNakedPutAmount = 0
         c.close()
-        print('naked put amount:', getNakedPutAmount, 'for symbol:', stock)
+        print('getNakedPutAmount:', getNakedPutAmount)
         return getNakedPutAmount
 
     def getTotalNakedPutAmount(self, account: str):
@@ -591,7 +532,7 @@ class Trader(TestApp):
         return position
 
     """
-    Get order book information
+    order book operations
     """
 
     def cancelStockOrderBook(self, account: str, symbol: str, action: str):
@@ -610,6 +551,10 @@ class Trader(TestApp):
             print('canceling order:', action, r[0])
             self.cancelOrder(int(r[0]))
         c.close()
+
+    """
+    Get order book information (stocks)
+    """
 
     def getStockQuantityOnOrderBook(self, account: str, symbol: str, action: str):
         self.getDbConnection()
@@ -635,7 +580,11 @@ class Trader(TestApp):
         c.close()
         return order_book_quantity
 
-    def getOptionsQuantityOnOrderBook(self, account: str, stock: str, putOrCall, action: str):
+    """
+    Get order book information (options)
+    """
+
+    def getOptionsQuantityOnOrderBook(self, account: str, stock: str, putOrCall: str, action: str):
         self.getDbConnection()
         c = self.db.cursor()
         t = (account, putOrCall, stock, action, 'Submitted', 'PreSubmitted', )
@@ -656,34 +605,40 @@ class Trader(TestApp):
         else:
             getOptionsQuantityOnOrderBook = 0
         c.close()
-        print('order_book_quantity:', getOptionsQuantityOnOrderBook)
+        print('getOptionsQuantityOnOrderBook:', getOptionsQuantityOnOrderBook)
         return getOptionsQuantityOnOrderBook
+
+    def getOptionsAmountOnOrderBook(self, account: str, stock: str, putOrCall: str, action: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (account, putOrCall, action, 'Submitted', 'PreSubmitted')
+        sql = 'SELECT SUM(open_order.remaining_qty * option.multiplier * option.strike / currency.rate) '\
+            'FROM open_order, portfolio, option, contract, currency ' \
+            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND open_order.contract_id = option.id AND option.call_or_put = ? AND option.stock_id = contract.id ' \
+            ' AND contract.currency = currency.currency ' \
+            ' AND currency.base = portfolio.base_currency' \
+            ' AND open_order.action_type = ?' \
+            ' AND open_order.status IN (?, ?)'
+        if stock:
+            t += (stock, )
+            sql = sql + ' AND contract.symbol = ? '
+        c.execute(sql, t)
+        r = c.fetchone()
+        if r[0]:
+            if action == 'BUY':
+                getOptionsAmountOnOrderBook = float(r[0])
+            elif action == 'SELL':
+                getOptionsAmountOnOrderBook = -float(r[0])
+        else:
+            getOptionsAmountOnOrderBook = 0
+        c.close()
+        print('getOptionsAmountOnOrderBook:', getOptionsAmountOnOrderBook)
+        return getOptionsAmountOnOrderBook
 
     """
     Trading functions
     """
-
-    @printWhenExecuting
-    def sellNakedPuts(self):
-        if (not self.portfolioLoaded) or (not self.ordersLoaded):
-            return
-        seconds = time.time()
-        # run every 1 minutes
-        if (seconds < (self.lastNakedPutsSale + (1 * 60))):
-            return
-        self.lastNakedPutsSale = seconds
-
-        # how much cash do we have?
-        portfolio_nav = self.getTotalCashAmount(self.account)
-        portfolio_nav += self.getPortfolioStocksValue(self.account)
-        portfolio_nav += self.getPortfolioOptionsValue(self.account)
-        print('portfolio_nav:', portfolio_nav)
-
-        # how much did we engage with ALL short puts?
-        naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
-
-        puttable_amount = portfolio_nav * self.nakedPutsRatio + naked_puts_engaged
-        print('puttable_amount:', puttable_amount)
 
     def adjustCash(self):
         if (not self.portfolioLoaded) or (not self.ordersLoaded):
@@ -754,26 +709,158 @@ class Trader(TestApp):
                 print('to sell: ', -to_adjust)
                 self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellBenchmark(-to_adjust))
 
-    def sellCoveredCallsIfPossible(self, contract: Contract, position: float,
-                        marketPrice: float, marketValue: float,
-                        averageCost: float, unrealizedPNL: float,
-                        realizedPNL: float, accountName: str):
-        if (not self.portfolioLoaded) or (not self.ordersLoaded):
+    def sellNakedPuts(self):
+        if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable):
             return
-        print('sellCoveredCallsIfPossible')
+        seconds = time.time()
+        # run every 10 minutes
+        if (seconds < (self.lastNakedPutsSale + (10 * 60))):
+            return
+        self.lastNakedPutsSale = seconds
+
+        # how much cash do we have?
+        portfolio_nav = self.getTotalCashAmount(self.account)
+        portfolio_nav += self.getPortfolioStocksValue(self.account, None)
+        portfolio_nav += self.getPortfolioOptionsValue(self.account, None)
+        print('portfolio_nav:', portfolio_nav)
+
+        # how much did we engage with ALL short puts?
+        naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
+
+        # how much short put we can sell, regarding global portfolio size
+        puttable_amount = portfolio_nav * self.nakedPutsRatio + naked_puts_engaged
+        print('puttable_amount:', puttable_amount)
+
+        puttable_amount += self.getOptionsAmountOnOrderBook(self.account, None, 'P', 'SELL')
+        print('puttable_amount:', puttable_amount)
+
+        # select option contracts which match:
+        #   implied volatility > historical volatility
+        #   Put
+        #   OTM
+        #   strike < how much we can engage
+        #   at least 80% success (delta < -0.2)
+        #   premium at least $0.25
+        t = ('P', puttable_amount/100, -0.2, 0.25, )
         self.getDbConnection()
         c = self.db.cursor()
-        cid = self.findOrCreateContract(contract)
+        c.execute(
+            'SELECT contract.con_id, '
+            '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
+            '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
+            '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
+            ' FROM contract, option, stock, contract stock_contract'
+            ' WHERE option.id = contract.id'
+            '  AND stock.id = option.stock_id'
+            '  AND stock_contract.id = stock.id'
+            '  AND option.call_or_put = ? '
+            '  AND option.implied_volatility > stock.historical_volatility'
+            '  AND option.strike < stock_contract.price'
+            '  AND option.strike < ?'
+            '  AND option.delta >= ?'
+            '  AND contract.bid >= ?',
+            t)
+        opt = c.fetchall()
+        c.close()
+        print(len(opt), 'contracts')
+        # sort by annualized yield descending
+        for rec in sorted(opt, key=cmp_to_key(lambda item1, item2: item2[7] - item1[7])):
+            # verify that this symbol is in our wheel
+#                print('symbol:', contract[1], 'of list:',  self.wheelSymbols)
+#                print('at pos:', self.wheelSymbols.index(contract[1]))
+            if rec[1] in self.wheelSymbols:
+                engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
+                print('now:', engaged, engaged / portfolio_nav, 'engaged for stock', rec[1])
+                engaged += rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD')
+                print(engaged, engaged / portfolio_nav, 'engaged with this Put')
+                # verify that we don't already have naked put position
+                if engaged <= (portfolio_nav * self.wheelSymbols[rec[1]]):
+                    print(rec)
+                    contract = Contract()
+                    contract.secType = "OPT"
+#                        contract.currency = benchmarkCurrency
+                    contract.exchange = "SMART"
+                    contract.symbol = rec[1]
+                    contract.lastTradeDateOrContractMonth = rec[2].replace('-', '')
+                    contract.strike = rec[3]
+                    contract.right = rec[4]
+#                        contract.multiplier = "100"
+                    price = round((rec[8] + rec[9]) / 2, 2)
+                    print(price)
+                    self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(price))
+                    return
+            else:
+                print(rec[5], 'ignored')
+
+    def sellCoveredCallsIfPossible(self,
+            contract: Contract, position: float,
+            marketPrice: float, marketValue: float,
+            averageCost: float, unrealizedPNL: float,
+            realizedPNL: float, accountName: str):
+        if (not self.portfolioLoaded) \
+                or (not self.ordersLoaded) \
+                or (not self.optionContractsAvailable) \
+                or (position < 100) \
+                or (contract.currency != 'USD'):
+            return
+        print('sellCoveredCallsIfPossible.', 'contract:', contract)
         if (contract.secType == 'STK'):
-            portfolio_id = self.findPortfolio(accountName)
-            short_call_position = self.getShortCallPositionQuantity(accountName, contract)
-            print('short_call_position:', short_call_position)
             stocks_on_sale = self.getStockQuantityOnOrderBook(accountName, contract.symbol, 'SELL')
             print('short_call_position:', stocks_on_sale)
+            short_call_position = self.getShortCallPositionQuantity(accountName, contract)
+            print('short_call_position:', short_call_position)
             call_on_order_book = self.getOptionsQuantityOnOrderBook(accountName, contract.symbol, 'C', 'SELL')
             print('call_on_order_book:', call_on_order_book)
-        c.close()
-        self.db.commit()
+            net_pos = position + stocks_on_sale + short_call_position + call_on_order_book
+            print('net_pos:', net_pos)
+            if net_pos >= 100:
+                # select option contracts which match:
+                #   Call
+                #   OTM
+                #   strike > PRU
+                #   at least 85% success (delta < 0.15)
+                #   premium at least $0.25
+                #   underlying stock is current stock
+                t = ('C', averageCost, 0.15, 0.25, contract.conId, )
+                self.getDbConnection()
+                c = self.db.cursor()
+                c.execute(
+                    'SELECT contract.con_id, '
+                    '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
+                    '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
+                    '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
+                    ' FROM contract, option, stock, contract stock_contract'
+                    ' WHERE option.id = contract.id'
+                    '  AND stock.id = option.stock_id'
+                    '  AND stock_contract.id = stock.id'
+                    '  AND option.call_or_put = ? '
+                    '  AND option.strike > stock_contract.price'
+                    '  AND option.strike > ?'
+                    '  AND option.delta <= ?'
+                    '  AND contract.bid >= ?'
+                    '  AND stock_contract.con_id = ?'
+                    , t)
+                # sort by annualized yield descending
+                opt = sorted(c.fetchall(), key=cmp_to_key(lambda item1, item2: item2[7] - item1[7]))
+                c.close()
+                print(len(opt), 'contracts')
+                if len(opt) > 0:
+#                    for rec in opt:
+#                        print(rec)
+                    rec = opt[0]
+                    contract = Contract()
+                    contract.secType = "OPT"
+    #                        contract.currency = benchmarkCurrency
+                    contract.exchange = "SMART"
+                    contract.symbol = rec[1]
+                    contract.lastTradeDateOrContractMonth = rec[2].replace('-', '')
+                    contract.strike = rec[3]
+                    contract.right = rec[4]
+    #                        contract.multiplier = "100"
+                    price = round((rec[8] + rec[9]) / 2, 2)
+                    print(price)
+                    self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellCoveredCall(price, math.floor(net_pos/100)))
+        print('sellCoveredCallsIfPossible done.')
 
     @printWhenExecuting
     def rollOptionIfNeeded(self):
@@ -781,18 +868,20 @@ class Trader(TestApp):
             return
         print('rollOptionIfNeeded')
 
-    @printWhenExecuting
     def findWheelSymbolsInfo(self):
+#        print('self.wheelSymbols:', self.wheelSymbols)
         seconds = time.time()
         # process one symbol every 1 minute
         if (seconds < self.nextWheelProcess):
             return
         print(
+#            'self.wheelSymbolsToProcess:', self.wheelSymbolsToProcess,
             'self.wheelSymbolsProcessing:', self.wheelSymbolsProcessing,
-            'self.wheelSymbolsExpirations:', len(self.wheelSymbolsExpirations), self.wheelSymbolsExpirations,
-            'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes), self.wheelSymbolsProcessingStrikes,
-            'self.wheelSymbols:', self.wheelSymbols,
-            'self.wheelSymbolsProcessed', self.wheelSymbolsProcessed)
+            'self.wheelSymbolsExpirations:', len(self.wheelSymbolsExpirations),
+#            self.wheelSymbolsExpirations,
+#            'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes), self.wheelSymbolsProcessingStrikes,
+#            'self.wheelSymbolsProcessed', self.wheelSymbolsProcessed
+            )
         # Don't come back too often. As I am afraid that 1 secs is too small regarding granularity, I put 2
         self.nextWheelProcess = seconds + 2
         if self.wheelSymbolsProcessing != None:
@@ -803,8 +892,10 @@ class Trader(TestApp):
             today = date.today()
             exp = None
             while len(self.wheelSymbolsExpirations) > 0:
-                exp = self.wheelSymbolsExpirations.pop()
+#                print('expirations:', self.wheelSymbolsExpirations)
+                exp = self.wheelSymbolsExpirations.pop(0)
                 expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
+#                print('expiration selected:', exp, expiration, 'left:', self.wheelSymbolsExpirations)
                 if (expiration - today).days < 50:
                     break
                 exp = None
@@ -822,9 +913,13 @@ class Trader(TestApp):
                 contract.lastTradeDateOrContractMonth = exp
                 contract.symbol = self.wheelSymbolsProcessing
                 # process at most xx strikes in each direction
-                for i in range(49):
-                    if (atm-i) >= 0:
-                        contract.strike = self.wheelSymbolsProcessingStrikes[atm-i]
+                steps = math.ceil(len(self.wheelSymbolsProcessingStrikes) / 100)
+#                print('steps:', steps)
+                # should be 49 but as reqContractDetails callback will submit new request we will 
+                # potentially overcome de 100 simultaneous requests limit
+                for i in range(0, 47):
+                    if (atm-i-1) >= 0:
+                        contract.strike = self.wheelSymbolsProcessingStrikes[atm-i-1]
                         contract.right = 'P'
                         self.reqContractDetails(self.getNextTickerId(), contract)
                         num_requests += 1
@@ -833,13 +928,14 @@ class Trader(TestApp):
                         contract.right = 'C'
                         self.reqContractDetails(self.getNextTickerId(), contract)
                         num_requests += 1
-                    # and no more than 10% distance
-                    if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.9)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.1)):
+                    # and no more than 15% distance
+                    if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.85)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.15)):
                         break
                 # IB API gives 11 seconds snapshots, and add 2 for safety
                 self.nextWheelProcess = seconds + 11 + 2
                 print(num_requests, 'reqContractDetails submitted')
             else:
+                print('done with symbol:', self.wheelSymbolsProcessing)
                 # we are finished with this symbol
                 self.wheelSymbolsProcessed.append(self.wheelSymbolsProcessing)
                 self.wheelSymbolsProcessing = None
@@ -847,13 +943,14 @@ class Trader(TestApp):
                 # immediately start with next one
                 self.nextWheelProcess = 0
                 self.findWheelSymbolsInfo()
-        elif len(self.wheelSymbols) > 0:
-            self.wheelSymbolsProcessingSymbol = self.wheelSymbols.pop()
+        elif len(self.wheelSymbolsToProcess) > 0:
+            self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop()
             contract = Contract()
             contract.exchange = 'SMART'
             contract.secType = 'STK'
             contract.conId = self.getContractConId(self.wheelSymbolsProcessingSymbol)
             contract.symbol = self.wheelSymbolsProcessingSymbol
+#            print(contract)
             self.reqContractDetails(self.getNextTickerId(), contract)
             self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
         else:
@@ -862,7 +959,7 @@ class Trader(TestApp):
             self.nextWheelProcess = seconds + (60 * 60)
             self.optionContractsAvailable = True
             # Then start again
-            self.wheelSymbols = self.wheelSymbolsProcessed
+            self.wheelSymbolsToProcess = list(self.wheelSymbols)
             self.wheelSymbolsProcessed = []
 
     """
@@ -873,23 +970,27 @@ class Trader(TestApp):
     # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
         super().error(reqId, errorCode, errorString)
-        print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
         if errorCode == 200:
             # 'No security definition has been found for the request':
             self.clearRequestId(reqId)
         elif errorCode == 162:
             # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
             self.clearRequestId(reqId)
+        else:
+            print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
     # ! [error] self.XreqId2nErr[reqId] += 1
 
     @iswrapper
     # ! [tickprice]
-    def tickPrice(self, reqId: TickerId, tickType: TickType, price: float,
-                  attrib: TickAttrib):
+    def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         super().tickPrice(reqId, tickType, price, attrib)
 #        print("TickPrice. TickerId:", reqId, "tickType:", tickType,
- #             "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
-  #            "PastLimit:", attrib.pastLimit, end=' ')
+ #           "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
+  #          "PastLimit:", attrib.pastLimit, end=' ')
+   #     if tickType == TickTypeEnum.BID or tickType == TickTypeEnum.ASK:
+    #        print("PreOpen:", attrib.preOpen)
+     #   else:
+      #      print()
         if price < 0:
             price = None
         self.getDbConnection()
@@ -963,7 +1064,7 @@ class Trader(TestApp):
         super().historicalData(reqId, bar)
         self.getDbConnection()
         c = self.db.cursor()
-        t = (bar.average, reqId, )
+        t = (bar.close, reqId, )
         c.execute(
             'UPDATE stock '
             ' SET Historical_Volatility = ? '
@@ -989,9 +1090,9 @@ class Trader(TestApp):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
         if exchange == "SMART":
-            print("SecurityDefinitionOptionParameter.",
-                "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier,
-                "Expirations:", expirations, "Strikes:", str(strikes))
+#            print("SecurityDefinitionOptionParameter.",
+#                "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier,
+#                "Expirations:", expirations, "Strikes:", str(strikes))
             self.wheelSymbolsExpirations = sorted(expirations)
             self.wheelSymbolsProcessingStrikes = sorted(strikes)
             self.wheelSymbolsProcessing = tradingClass
@@ -1069,8 +1170,8 @@ class Trader(TestApp):
             c.execute('UPDATE contract SET price = ? WHERE id = ?', t)
             c.close()
             self.db.commit()
-#            self.sellCoveredCallsIfPossible(contract, position, marketPrice, marketValue,
-#                                    averageCost, unrealizedPNL, realizedPNL, accountName)
+            self.sellCoveredCallsIfPossible(contract, position, marketPrice, marketValue,
+                averageCost, unrealizedPNL, realizedPNL, accountName)
     # ! [updateportfolio]
 
     @iswrapper
@@ -1079,16 +1180,6 @@ class Trader(TestApp):
         super().accountDownloadEnd(accountName)
         self.portfolioLoaded = True
     # ! [accountdownloadend]
-
-    @iswrapper
-    # ! [position]
-    def position(self, accountName: str, contract: Contract, position: float,
-                 averageCost: float):
-        super().position(accountName, contract, position, averageCost)
-        cid = self.findOrCreateContract(contract)
-        self.createOrUpdatePosition(cid, position, averageCost, accountName)
-        unused() # dans quel cas ?
-    # ! [position]
 
     @iswrapper
     # ! [openorder]
@@ -1159,7 +1250,7 @@ class Trader(TestApp):
                 'WHERE contract.con_id = ?', t)
         c.close()
         self.db.commit()
-        print('contractDetails. reqId:', reqId, 'contract:', contractDetails.contract, 'saved reqMktData id:', nextReqId)
+#        print('contractDetails. reqId:', reqId, 'contract:', contractDetails.contract, 'saved reqMktData id:', nextReqId)
         if contractDetails.contract.secType == 'STK':
             self.reqHistoricalData(nextReqId, contractDetails.contract, "",
                 "1 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
@@ -1177,12 +1268,14 @@ class Trader(TestApp):
             super().managedAccounts(accountsList)
             self.benchmarkSymbol = 'VT'
             self.nakedPutsRatio = 0.5
-            self.wheelSymbols = [
-                'SPY'
-               # , 'AAPL', 'MSFT',
-#                'SPG', 'XOM', 'TME', 'FXI', 'IQ', 'KMI', 'RSX', 'CCL', 'MGM',
-                #'PFSI', 'PSEC'
-                ]
+            self.wheelSymbols = {
+                'SPG': 0.0, 'XOM': 0.0, 'IQ': 0.0, 'TME': 0.0, 'FXI': 0.0,
+                'PSEC': 0.005, 'PFSI': 0.005,
+                'CCL': 0.025,
+                'MGM': 0.035,
+                'SPY': 0.05, 'AAPL': 0.05, 'MSFT': 0.05, 'KMI': 0.05, 'RSX': 0.05, 'QQQ': 0.05,
+            }
+            self.wheelSymbolsToProcess = list(self.wheelSymbols)
             self.wheelSymbolsProcessing = None
             self.wheelSymbolsProcessingStrikes = []
             self.wheelSymbolsExpirations = []
@@ -1209,7 +1302,9 @@ class Trader(TestApp):
     # ! [updateaccounttime]
     def updateAccountTime(self, timeStamp: str):
         super().updateAccountTime(timeStamp)
+        # perform regular tasks
         self.findWheelSymbolsInfo()
+        self.sellNakedPuts()
         self.adjustCash()
     # ! [updateaccounttime]
 
@@ -1227,62 +1322,9 @@ class Trader(TestApp):
 
     @printWhenExecuting
     def stop(self):
-        super().stop()
         # ! [cancelaaccountupdates]
         self.reqAccountUpdates(False, self.account)
         # ! [cancelaaccountupdates]
         self.clearApiReqId()
         if (self.db):
             self.db.close()
-
-def main():
-    SetupLogger()
-    logging.debug("now is %s", datetime.datetime.now())
-    logging.getLogger().setLevel(logging.ERROR)
-
-    cmdLineParser = argparse.ArgumentParser("api tests")
-    # cmdLineParser.add_option("-c", action="store_True", dest="use_cache", default = False, help = "use the cache")
-    # cmdLineParser.add_option("-f", action="store", type="string", dest="file", default="", help="the input file")
-    cmdLineParser.add_argument("-p", "--port", action="store", type=int,
-                               dest="port", default=7497, help="The TCP port to use")
-    # RYL
-    cmdLineParser.add_argument("--host", action="store",
-                               dest="host", default="localhost", help="The IB TWS hostname to use")
-    args = cmdLineParser.parse_args()
-    print("Using args", args)
-    logging.debug("Using args %s", args)
-    # print(args)
-
-    # enable logging when member vars are assigned
-    from ibapi import utils
-    Order.__setattr__ = utils.setattr_log
-    Contract.__setattr__ = utils.setattr_log
-    DeltaNeutralContract.__setattr__ = utils.setattr_log
-    TagValue.__setattr__ = utils.setattr_log
-    TimeCondition.__setattr__ = utils.setattr_log
-    ExecutionCondition.__setattr__ = utils.setattr_log
-    MarginCondition.__setattr__ = utils.setattr_log
-    PriceCondition.__setattr__ = utils.setattr_log
-    PercentChangeCondition.__setattr__ = utils.setattr_log
-    VolumeCondition.__setattr__ = utils.setattr_log
-
-    try:
-        app = Trader()
-        # ! [connect]
-        # RYL
-        app.connect(args.host, args.port, clientId=0)
-        # ! [connect]
-        print("serverVersion:%s connectionTime:%s" % (app.serverVersion(),
-                                                      app.twsConnectionTime()))
-
-        # ! [clientrun]
-        app.run()
-        # ! [clientrun]
-    except:
-        raise
-    finally:
-        app.dumpTestCoverageSituation()
-        app.dumpReqAnsErrSituation()
-
-if __name__ == "__main__":
-    main()

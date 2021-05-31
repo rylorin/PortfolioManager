@@ -315,7 +315,7 @@ class TestApp(TestWrapper, TestClient):
     # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
         super().error(reqId, errorCode, errorString)
-        print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
+#        print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
 
     # ! [error] self.reqId2nErr[reqId] += 1
 
@@ -522,10 +522,10 @@ class TestApp(TestWrapper, TestClient):
         super().updatePortfolio(contract, position, marketPrice, marketValue,
                                 averageCost, unrealizedPNL, realizedPNL, accountName)
 #        print("UpdatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
- #             contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
-  #            "MarketValue:", marketValue, "AverageCost:", averageCost,
-   #           "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
-    #          "AccountName:", accountName)
+#              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+#              "MarketValue:", marketValue, "AverageCost:", averageCost,
+#              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+#              "AccountName:", accountName)
     # ! [updateportfolio]
 
     @iswrapper
@@ -1018,14 +1018,15 @@ class TestApp(TestWrapper, TestClient):
     @iswrapper
     # ! [historicaldata]
     def historicalData(self, reqId:int, bar: BarData):
-        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
+        super().historicalData(reqId, bar)
+#        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
     # ! [historicaldata]
 
     @iswrapper
     # ! [historicaldataend]
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         super().historicalDataEnd(reqId, start, end)
-        print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
+#        print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
     # ! [historicaldataend]
 
     @iswrapper
