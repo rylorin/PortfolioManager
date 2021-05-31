@@ -30,14 +30,37 @@ from ibapi.tag_value import TagValue
 
 from ibapi.account_summary_tags import *
 
-from Testbed.Program import printWhenExecuting
-from Testbed.Program import TestApp
 from TraderOrder import TraderOrder
 
-class Trader(TestApp):
+def printWhenExecuting(fn):
+    def fn2(self):
+        print("   doing", fn.__name__)
+        fn(self)
+        print("   done w/", fn.__name__)
+
+    return fn2
+
+def printinstance(inst:Object):
+    attrs = vars(inst)
+    print(', '.join("%s: %s" % item for item in attrs.items()))
+
+# this is here for documentation generation
+"""
+#! [ereader]
+        # You don't need to run this in your code!
+        self.reader = reader.EReader(self.conn, self.msg_queue)
+        self.reader.start()   # start thread
+#! [ereader]
+"""
+
+# ! [socket_init]
+class Trader(wrapper.EWrapper, EClient):
 
     def __init__(self):
-        TestApp.__init__(self)
+        wrapper.EWrapper.__init__(self)
+        EClient.__init__(self, wrapper=self)
+        self.started = False
+        self.nextValidOrderId = None
         self.db = None
         self.account = None
         self.portfolioNAV = None
@@ -633,7 +656,7 @@ class Trader(TestApp):
         else:
             getOptionsAmountOnOrderBook = 0
         c.close()
-        print('getOptionsAmountOnOrderBook:', getOptionsAmountOnOrderBook)
+        print('getOptionsAmountOnOrderBook(', account, stock, putOrCall, action, ') =>', getOptionsAmountOnOrderBook)
         return getOptionsAmountOnOrderBook
 
     """
@@ -1261,14 +1284,16 @@ class Trader(TestApp):
     @iswrapper
     # ! [managedaccounts]
     def managedAccounts(self, accountsList: str):
+        super().managedAccounts(accountsList)
         if self.account:
-            super().managedAccounts(accountsList)
+            return
         else:
             # first time
-            super().managedAccounts(accountsList)
+            self.account = accountsList.split(",")[0]
             self.benchmarkSymbol = 'VT'
             self.nakedPutsRatio = 0.5
             self.wheelSymbols = {
+                # 0.0 will sell only Calls on symbol, no more Put sale
                 'SPG': 0.0, 'XOM': 0.0, 'IQ': 0.0, 'TME': 0.0, 'FXI': 0.0,
                 'PSEC': 0.005, 'PFSI': 0.005,
                 'CCL': 0.025,
