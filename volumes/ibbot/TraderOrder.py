@@ -30,13 +30,17 @@ class TraderOrder:
         return order
 
     @staticmethod
-    def BuyBenchmark(quantity:float):
+    def BuyBenchmark(quantity: int):
         order = TraderOrder.Midprice("BUY", quantity, 1)
+        # always true because of price cap that will prevent execution
+        order.transmit = True
         return order
 
     @staticmethod
-    def SellBenchmark(quantity:float):
+    def SellBenchmark(quantity: int):
         order = TraderOrder.Midprice("SELL", quantity, 1000000)
+        # always true because of price cap that will prevent execution
+        order.transmit = True
         return order
 
     @staticmethod

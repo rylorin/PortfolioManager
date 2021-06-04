@@ -59,6 +59,7 @@ class Trader(wrapper.EWrapper, EClient):
     def __init__(self):
         wrapper.EWrapper.__init__(self)
         EClient.__init__(self, wrapper=self)
+        self.nKeybInt = 0
         self.started = False
         self.nextValidOrderId = None
         self.db = None
@@ -77,6 +78,11 @@ class Trader(wrapper.EWrapper, EClient):
     def getNextTickerId(self):
         self.nextTickerId += 1
         return self.nextTickerId
+
+    def nextOrderId(self):
+            oid = self.nextValidOrderId
+            self.nextValidOrderId += 1
+            return oid
 
     def getDbConnection(self):
         if self.db == None:
@@ -438,6 +444,30 @@ class Trader(wrapper.EWrapper, EClient):
     Get positions information (options)
     """
 
+    def getShortCallPositionQuantity(self, account: str, stock: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (account, stock, 'C', )
+        c.execute(
+            'SELECT SUM(position.quantity * option.multiplier), MIN(option.multiplier) ' \
+            'FROM position, portfolio, contract stock_contract, option ' \
+            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND position.quantity < 0 ' \
+            ' AND option.id  = position.contract_id ' \
+            ' AND stock_contract.id = option.stock_id AND stock_contract.symbol = ?' \
+            ' AND option.call_or_put = ?',
+            t)
+        r = c.fetchone()
+        if r[0]:
+            getShortCallPositionQuantity = int(r[0])
+            multiplier = int(r[1])
+        else:
+            getShortCallPositionQuantity = 0
+            multiplier = 100
+        c.close()
+        print('getShortCallPositionQuantity:', getShortCallPositionQuantity)
+        return getShortCallPositionQuantity
+
     def getPortfolioOptionsValue(self, account: str, stock: str):
         self.getDbConnection()
         c = self.db.cursor()
@@ -450,16 +480,17 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND contract.currency = currency.currency ' \
             ' AND currency.base = portfolio.base_currency' \
             ' AND stock_contract.id = option.stock_id'
-        if stock:
+        if stock != None:
             t += (stock, )
             sql += ' AND stock_contract.symbol = ?'
+        c.execute(sql, t)
         r = c.fetchone()
         if r:
             getPortfolioOptionsValue = float(r[0])
         else:
             getPortfolioOptionsValue = 0
         c.close()
-        print('getPortfolioOptionsValue:', getPortfolioOptionsValue)
+        print('getPortfolioOptionsValue(', account, stock, ') =>', getPortfolioOptionsValue)
         return getPortfolioOptionsValue
 
     # returned value is <= 0 in base currency
@@ -532,28 +563,6 @@ class Trader(wrapper.EWrapper, EClient):
         print('ITM naked put:', naked_puts_amount)
         return naked_puts_amount
 
-    def getShortCallPositionQuantity(self, account: str, contract: Contract):
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (account, contract.conId, 'OPT', 'C', )
-        c.execute(
-            'SELECT SUM(position.quantity * option.multiplier), MIN(option.multiplier) ' \
-            'FROM position, portfolio, contract, option ' \
-            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND position.contract_id = contract.id AND contract.con_id = ? AND contract.secType = ? ' \
-            ' AND position.contract_id = option.id AND option.call_or_put = ?',
-            t)
-        r = c.fetchone()
-        if r[0]:
-            position = int(r[0])
-            multiplier = int(r[1])
-        else:
-            position = 0
-            multiplier = 100
-        print('call positions adjust:', position)
-        c.close()
-        return position
-
     """
     order book operations
     """
@@ -594,14 +603,14 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         if r[0]:
             if action == 'BUY':
-                order_book_quantity = float(r[0])
+                getStockQuantityOnOrderBook = float(r[0])
             elif action == 'SELL':
-                order_book_quantity = -float(r[0])
+                getStockQuantityOnOrderBook = -float(r[0])
         else:
-            order_book_quantity = 0
-        print('order_book_quantity:', order_book_quantity)
+            getStockQuantityOnOrderBook = 0
         c.close()
-        return order_book_quantity
+        print('getStockQuantityOnOrderBook:', getStockQuantityOnOrderBook)
+        return getStockQuantityOnOrderBook
 
     """
     Get order book information (options)
@@ -798,7 +807,7 @@ class Trader(wrapper.EWrapper, EClient):
                 print(engaged, engaged / portfolio_nav, 'engaged with this Put')
                 # verify that we don't already have naked put position
                 if engaged <= (portfolio_nav * self.wheelSymbols[rec[1]]):
-                    print(rec)
+                    print(self.wheelSymbols[rec[1]], engaged, (portfolio_nav * self.wheelSymbols[rec[1]]), rec)
                     contract = Contract()
                     contract.secType = "OPT"
 #                        contract.currency = benchmarkCurrency
@@ -829,11 +838,8 @@ class Trader(wrapper.EWrapper, EClient):
         print('sellCoveredCallsIfPossible.', 'contract:', contract)
         if (contract.secType == 'STK'):
             stocks_on_sale = self.getStockQuantityOnOrderBook(accountName, contract.symbol, 'SELL')
-            print('short_call_position:', stocks_on_sale)
-            short_call_position = self.getShortCallPositionQuantity(accountName, contract)
-            print('short_call_position:', short_call_position)
+            short_call_position = self.getShortCallPositionQuantity(accountName, contract.symbol)
             call_on_order_book = self.getOptionsQuantityOnOrderBook(accountName, contract.symbol, 'C', 'SELL')
-            print('call_on_order_book:', call_on_order_book)
             net_pos = position + stocks_on_sale + short_call_position + call_on_order_book
             print('net_pos:', net_pos)
             if net_pos >= 100:
@@ -902,7 +908,8 @@ class Trader(wrapper.EWrapper, EClient):
             'self.wheelSymbolsProcessing:', self.wheelSymbolsProcessing,
             'self.wheelSymbolsExpirations:', len(self.wheelSymbolsExpirations),
 #            self.wheelSymbolsExpirations,
-#            'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes), self.wheelSymbolsProcessingStrikes,
+            'self.wheelSymbolsProcessingStrikes:', len(self.wheelSymbolsProcessingStrikes),
+#            self.wheelSymbolsProcessingStrikes,
 #            'self.wheelSymbolsProcessed', self.wheelSymbolsProcessed
             )
         # Don't come back too often. As I am afraid that 1 secs is too small regarding granularity, I put 2
@@ -940,7 +947,8 @@ class Trader(wrapper.EWrapper, EClient):
 #                print('steps:', steps)
                 # should be 49 but as reqContractDetails callback will submit new request we will 
                 # potentially overcome de 100 simultaneous requests limit
-                for i in range(0, 47):
+                # I lower substencially as TWS is running it's own querie that counts for the same limit
+                for i in range(0, 35):
                     if (atm-i-1) >= 0:
                         contract.strike = self.wheelSymbolsProcessingStrikes[atm-i-1]
                         contract.right = 'P'
@@ -952,8 +960,8 @@ class Trader(wrapper.EWrapper, EClient):
                         self.reqContractDetails(self.getNextTickerId(), contract)
                         num_requests += 1
                     # and no more than 15% distance
-                    if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.85)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.15)):
-                        break
+# to debug may be out of bounds                   if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.85)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.15)):
+#                        break
                 # IB API gives 11 seconds snapshots, and add 2 for safety
                 self.nextWheelProcess = seconds + 11 + 2
                 print(num_requests, 'reqContractDetails submitted')
@@ -989,6 +997,7 @@ class Trader(wrapper.EWrapper, EClient):
     IB API wrappers
     """
 
+
     @iswrapper
     # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
@@ -1008,12 +1017,12 @@ class Trader(wrapper.EWrapper, EClient):
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
         super().tickPrice(reqId, tickType, price, attrib)
 #        print("TickPrice. TickerId:", reqId, "tickType:", tickType,
- #           "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
-  #          "PastLimit:", attrib.pastLimit, end=' ')
-   #     if tickType == TickTypeEnum.BID or tickType == TickTypeEnum.ASK:
-    #        print("PreOpen:", attrib.preOpen)
-     #   else:
-      #      print()
+#            "Price:", price, "CanAutoExecute:", attrib.canAutoExecute,
+#            "PastLimit:", attrib.pastLimit, end=' ')
+#        if tickType == TickTypeEnum.BID or tickType == TickTypeEnum.ASK:
+#            print("PreOpen:", attrib.preOpen)
+#        else:
+#            print()
         if price < 0:
             price = None
         self.getDbConnection()
@@ -1080,30 +1089,6 @@ class Trader(wrapper.EWrapper, EClient):
             self.nextWheelProcess = 0
             self.findWheelSymbolsInfo()
     # ! [ticksnapshotend]
-
-    @iswrapper
-    # ! [historicaldata]
-    def historicalData(self, reqId:int, bar: BarData):
-        super().historicalData(reqId, bar)
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (bar.close, reqId, )
-        c.execute(
-            'UPDATE stock '
-            ' SET Historical_Volatility = ? '
-            ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
-            t)
-        c.close()
-        self.db.commit()
-    # ! [historicaldata]
-
-    @iswrapper
-    # ! [historicaldataend]
-    def historicalDataEnd(self, reqId: int, start: str, end: str):
-        super().historicalDataEnd(reqId, start, end)
-        count = self.clearRequestId(reqId)
-        self.findWheelSymbolsInfo()
-    # ! [historicaldataend]
 
     @iswrapper
     # ! [securityDefinitionOptionParameter]
@@ -1253,6 +1238,30 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [orderstatus]
 
     @iswrapper
+    # ! [historicaldata]
+    def historicalData(self, reqId:int, bar: BarData):
+        super().historicalData(reqId, bar)
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (bar.close, reqId, )
+        c.execute(
+            'UPDATE stock '
+            ' SET Historical_Volatility = ? '
+            ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
+            t)
+        c.close()
+        self.db.commit()
+    # ! [historicaldata]
+
+    @iswrapper
+    # ! [historicaldataend]
+    def historicalDataEnd(self, reqId: int, start: str, end: str):
+        super().historicalDataEnd(reqId, start, end)
+        count = self.clearRequestId(reqId)
+        self.findWheelSymbolsInfo()
+    # ! [historicaldataend]
+
+    @iswrapper
     # ! [contractdetails]
     def contractDetails(self, reqId: int, contractDetails: ContractDetails):
         super().contractDetails(reqId, contractDetails)
@@ -1274,8 +1283,11 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         self.db.commit()
 #        print('contractDetails. reqId:', reqId, 'contract:', contractDetails.contract, 'saved reqMktData id:', nextReqId)
+        queryTime = (datetime.datetime.today() - datetime.timedelta(days=180)).strftime("%Y%m%d %H:%M:%S")
+        queryTime = (datetime.datetime.today()).strftime("%Y%m%d 00:00:00")
+        queryTime = ""
         if contractDetails.contract.secType == 'STK':
-            self.reqHistoricalData(nextReqId, contractDetails.contract, "",
+            self.reqHistoricalData(nextReqId, contractDetails.contract, queryTime,
                 "1 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
         elif contractDetails.contract.secType == 'OPT':
             self.reqMktData(nextReqId, contractDetails.contract, "", True, False, [])
@@ -1294,11 +1306,19 @@ class Trader(wrapper.EWrapper, EClient):
             self.nakedPutsRatio = 0.5
             self.wheelSymbols = {
                 # 0.0 will sell only Calls on symbol, no more Put sale
-                'SPG': 0.0, 'XOM': 0.0, 'IQ': 0.0, 'TME': 0.0, 'FXI': 0.0,
+                'SPG': 0.0, 'XOM': 0.0, 'IQ': 0.0, 'TME': 0.0,
                 'PSEC': 0.005, 'PFSI': 0.005,
-                'CCL': 0.025,
-                'MGM': 0.035,
-                'SPY': 0.05, 'AAPL': 0.05, 'MSFT': 0.05, 'KMI': 0.05, 'RSX': 0.05, 'QQQ': 0.05,
+                # standard size 2%
+                'CCL': 0.02, 'MGM': 0.02,
+                'YNDX': 0.35,
+                # Barrage Capital
+                'KMI': 0.05, 'ATVI': 0.05,
+                # 0.05 to 0.1 for high quality/blue chips
+                'AAPL': 0.06, 'MSFT': 0.1, 'KO': 0.05,
+                # 0.05 for ETF
+                'RSX': 0.05, 'QQQ': 0.05, 'AIA': 0.05,  'FXI': 0.05,
+                # High but the lowest for a single contract
+                'TSM': 0.06, 'BIDU': 0.1, 'BABA': 0.1, 'SPY': 0.2, 
             }
             self.wheelSymbolsToProcess = list(self.wheelSymbols)
             self.wheelSymbolsProcessing = None
@@ -1315,7 +1335,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.clearPortfolioPositions(self.account)
             self.clearOpenOrders(self.account)
 
-            self.reqMarketDataType(MarketDataTypeEnum.FROZEN)
+            self.reqMarketDataType(MarketDataTypeEnum.REALTIME)
             # start account updates
             self.reqAccountUpdates(True, self.account)
             # Requesting the next valid id. The parameter is always ignored.
@@ -1336,6 +1356,24 @@ class Trader(wrapper.EWrapper, EClient):
     """
     Main Program
     """
+    @iswrapper
+    # ! [connectack]
+    def connectAck(self):
+        if self.asynchronous:
+            self.startApi()
+
+    # ! [connectack]
+
+    @iswrapper
+    # ! [nextvalidid]
+    def nextValidId(self, orderId: int):
+        super().nextValidId(orderId)
+        self.nextValidOrderId = orderId
+        print("NextValidId:", orderId)
+    # ! [nextvalidid]
+
+        # we can start now
+        self.start()
 
     @printWhenExecuting
     def start(self):
@@ -1344,6 +1382,15 @@ class Trader(wrapper.EWrapper, EClient):
         self.started = True
         # first retrieve account info
         self.reqManagedAccts()
+
+    @printWhenExecuting
+    def keyboardInterrupt(self):
+        self.nKeybInt += 1
+        if self.nKeybInt == 1:
+            self.stop()
+        else:
+            print("Finishing test")
+            self.done = True
 
     @printWhenExecuting
     def stop(self):
