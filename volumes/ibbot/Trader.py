@@ -65,7 +65,6 @@ class Trader(wrapper.EWrapper, EClient):
         self.db = None
         self.account = None
         self.portfolioNAV = None
-        self.benchmarkSymbol = None
         self.portfolioLoaded = False
         self.ordersLoaded = False
         self.optionContractsAvailable = False
@@ -161,6 +160,91 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         self.db.commit()
         return count
+
+    def getBenchmark(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol '
+            ' FROM contract, portfolio '
+            ' WHERE portfolio.account = ?'
+            '  AND contract.id = portfolio.benchmark_id', t)
+        r = c.fetchone()
+        getBenchmark = Contract()
+        getBenchmark.exchange = 'SMART'
+        getBenchmark.conId = r[0]
+        getBenchmark.currency = r[1]
+        getBenchmark.secType = r[2]
+        getBenchmark.symbol = r[3]
+        c.close()
+        self.db.commit()
+        print('getBenchmark:', getBenchmark)
+        return getBenchmark
+
+    def getNakedPutRatio(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.put_ratio'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        getNakedPutRatio =float(r[0])
+        c.close()
+        self.db.commit()
+        print('getNakedPutRatio:', getNakedPutRatio)
+        return getNakedPutRatio
+
+    def getNakedPutSleep(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.sell_naked_put_sleep'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        getNakedPutSleep = int(r[0])
+        c.close()
+        self.db.commit()
+        print('getNakedPutSleep:', getNakedPutSleep)
+        return getNakedPutSleep
+
+    def getFindSymbolsSleep(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.find_symbols_sleep'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        getFindSymbolsSleep = int(r[0])
+        c.close()
+        self.db.commit()
+        print('getFindSymbolsSleep:', getFindSymbolsSleep)
+        return getFindSymbolsSleep
+
+    def getAdjustCashSleep(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.adjust_cash_sleep'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        getAdjustCashSleep = int(r[0])
+        c.close()
+        self.db.commit()
+        print('getAdjustCashSleep:', getAdjustCashSleep)
+        return getAdjustCashSleep
 
     def findOrCreateStockContract(self, contract: Contract):
         self.getDbConnection()
@@ -672,14 +756,18 @@ class Trader(wrapper.EWrapper, EClient):
     Trading functions
     """
 
+    @printWhenExecuting
     def adjustCash(self):
         if (not self.portfolioLoaded) or (not self.ordersLoaded):
             return
+        sleep = self.getAdjustCashSleep(self.account)
         seconds = time.time()
-        # run every 10 minutes
-        if (seconds < (self.lastCashAdjust + (10 * 60))):
+        if (seconds < (self.lastCashAdjust + (sleep * 60))):
             return
         self.lastCashAdjust = seconds
+
+        benchmark = self.getBenchmark(self.account)
+        benchmarkSymbol = benchmark.symbol
 
         # how much cash do we have?
         total_cash = self.getTotalCashAmount(self.account)
@@ -691,17 +779,17 @@ class Trader(wrapper.EWrapper, EClient):
         naked_puts_amount = self.getItmNakedPutAmount(self.account,)
 
         # open orders quantity
-        benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, self.benchmarkSymbol, 'BUY')
-        benchmark_on_buy -= self.getOptionsQuantityOnOrderBook(self.account, self.benchmarkSymbol, 'P', 'SELL')
+        benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
+        benchmark_on_buy -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
         print('benchmark_on_buy', benchmark_on_buy)
-        benchmark_on_sale = self.getStockQuantityOnOrderBook(self.account, self.benchmarkSymbol, 'SELL')
-        benchmark_on_sale -= self.getOptionsQuantityOnOrderBook(self.account, self.benchmarkSymbol, 'C', 'SELL')
+        benchmark_on_sale = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'SELL')
+        benchmark_on_sale -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'C', 'SELL')
         print('benchmark_on_sale', benchmark_on_sale)
 
         # benchmark price in base
-        benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, self.benchmarkSymbol)
-        benchmarkPrice = self.getSymbolPrice(self.benchmarkSymbol)
-        benchmarkCurrency = self.getSymbolCurrency(self.benchmarkSymbol)
+        benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, benchmarkSymbol)
+        benchmarkPrice = self.getSymbolPrice(benchmarkSymbol)
+        benchmarkCurrency = self.getSymbolCurrency(benchmarkSymbol)
         benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
@@ -711,7 +799,7 @@ class Trader(wrapper.EWrapper, EClient):
         if net_cash < 0:
             to_adjust = net_cash / benchmarkPriceInBase
         elif benchmarkCurrencyBalance > (net_cash * benchmarkBaseToCurrencyRatio):
-            net_cash += self.getNakedPutAmount(self.account, self.benchmarkSymbol)
+            net_cash += self.getNakedPutAmount(self.account, benchmarkSymbol)
             print('adjusted net_cash:', net_cash)
             if net_cash > 0:
                 to_adjust = (net_cash * benchmarkBaseToCurrencyRatio) / benchmarkPrice
@@ -725,28 +813,24 @@ class Trader(wrapper.EWrapper, EClient):
         print('adjusted to_adjust:', to_adjust)
         if (to_adjust != (benchmark_on_buy + benchmark_on_sale)):
             # adjustement order required
-            self.cancelStockOrderBook(self.account, self.benchmarkSymbol, 'BUY')
-            self.cancelStockOrderBook(self.account, self.benchmarkSymbol, 'SELL')
+            self.cancelStockOrderBook(self.account, benchmarkSymbol, 'BUY')
+            self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
 
-            contract = Contract()
-            contract.symbol = self.benchmarkSymbol
-            contract.secType = "STK"
-            contract.currency = benchmarkCurrency
-            contract.exchange = "SMART"
-            to_adjust += self.getOptionsQuantityOnOrderBook(self.account, self.benchmarkSymbol, 'P', 'SELL')
+            to_adjust += self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
             if (to_adjust > 0):
                 print('toBuy: ', to_adjust)
-                self.placeOrder(self.nextOrderId(), contract, TraderOrder.BuyBenchmark(to_adjust))
+                self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
             elif (to_adjust < 0):
                 print('to sell: ', -to_adjust)
-                self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellBenchmark(-to_adjust))
+                self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
+    @printWhenExecuting
     def sellNakedPuts(self):
         if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable):
             return
+        sleep = self.getNakedPutSleep(self.account)
         seconds = time.time()
-        # run every 10 minutes
-        if (seconds < (self.lastNakedPutsSale + (10 * 60))):
+        if (seconds < (self.lastNakedPutsSale + (sleep * 60))):
             return
         self.lastNakedPutsSale = seconds
 
@@ -760,7 +844,8 @@ class Trader(wrapper.EWrapper, EClient):
         naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
 
         # how much short put we can sell, regarding global portfolio size
-        puttable_amount = portfolio_nav * self.nakedPutsRatio + naked_puts_engaged
+        nakedPutsRatio = self.getNakedPutRatio(self.account)
+        puttable_amount = portfolio_nav * nakedPutsRatio + naked_puts_engaged
         print('puttable_amount:', puttable_amount)
 
         puttable_amount += self.getOptionsAmountOnOrderBook(self.account, None, 'P', 'SELL')
@@ -771,7 +856,7 @@ class Trader(wrapper.EWrapper, EClient):
         #   Put
         #   OTM
         #   strike < how much we can engage
-        #   at least 80% success (delta < -0.2)
+        #   at least 80% success (delta >= -0.2)
         #   premium at least $0.25
         t = ('P', puttable_amount/100, -0.2, 0.25, )
         self.getDbConnection()
@@ -847,7 +932,7 @@ class Trader(wrapper.EWrapper, EClient):
                 #   Call
                 #   OTM
                 #   strike > PRU
-                #   at least 85% success (delta < 0.15)
+                #   at least 85% success (delta < =0.15)
                 #   premium at least $0.25
                 #   underlying stock is current stock
                 t = ('C', averageCost, 0.15, 0.25, contract.conId, )
@@ -897,10 +982,12 @@ class Trader(wrapper.EWrapper, EClient):
             return
         print('rollOptionIfNeeded')
 
+    @printWhenExecuting
     def findWheelSymbolsInfo(self):
 #        print('self.wheelSymbols:', self.wheelSymbols)
+        sleep = self.getFindSymbolsSleep(self.account)
         seconds = time.time()
-        # process one symbol every 1 minute
+#        if (seconds < (self.lastNakedPutsSale + (sleep * 60))):
         if (seconds < self.nextWheelProcess):
             return
         print(
@@ -1001,14 +1088,20 @@ class Trader(wrapper.EWrapper, EClient):
     @iswrapper
     # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
-        super().error(reqId, errorCode, errorString)
         if errorCode == 200:
             # 'No security definition has been found for the request':
             self.clearRequestId(reqId)
         elif errorCode == 162:
             # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
+            super().error(reqId, errorCode, errorString)
             self.clearRequestId(reqId)
+        elif errorCode == 1090:
+            # Part of requested market data is not subscribed. Subscription-independent ticks are still active.Delayed market data is not available
+# to clean output for the moment            super().error(reqId, errorCode, errorString)
+            super().error(reqId, errorCode, errorString)
+            pass
         else:
+            super().error(reqId, errorCode, errorString)
             print("Error. Id:", reqId, "Code:", errorCode, "Msg:", errorString)
     # ! [error] self.XreqId2nErr[reqId] += 1
 
@@ -1302,15 +1395,13 @@ class Trader(wrapper.EWrapper, EClient):
         else:
             # first time
             self.account = accountsList.split(",")[0]
-            self.benchmarkSymbol = 'VT'
-            self.nakedPutsRatio = 0.5
             self.wheelSymbols = {
                 # 0.0 will sell only Calls on symbol, no more Put sale
                 'SPG': 0.0, 'XOM': 0.0, 'IQ': 0.0, 'TME': 0.0,
                 'PSEC': 0.005, 'PFSI': 0.005,
                 # standard size 2%
                 'CCL': 0.02, 'MGM': 0.02,
-                'YNDX': 0.35,
+                'YNDX': 0.035,
                 # Barrage Capital
                 'KMI': 0.05, 'ATVI': 0.05,
                 # 0.05 to 0.1 for high quality/blue chips
@@ -1335,7 +1426,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.clearPortfolioPositions(self.account)
             self.clearOpenOrders(self.account)
 
-            self.reqMarketDataType(MarketDataTypeEnum.REALTIME)
+            self.reqMarketDataType(MarketDataTypeEnum.DELAYED_FROZEN)
             # start account updates
             self.reqAccountUpdates(True, self.account)
             # Requesting the next valid id. The parameter is always ignored.
