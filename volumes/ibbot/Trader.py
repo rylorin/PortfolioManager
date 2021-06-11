@@ -198,9 +198,9 @@ class Trader(wrapper.EWrapper, EClient):
             '  AND trading_parameters.portfolio_id = portfolio.id'
             '  AND contract.id = trading_parameters.stock_id'
             ' ORDER BY trading_parameters.nav_ratio DESC'
-#            ' LIMIT 2' # for testing
             , t)
         getWheelSymbolsToProcess = [item[0] for item in c.fetchall()]
+#        getWheelSymbolsToProcess = [ 'SPG' ] # for testing
         c.close()
         self.db.commit()
         print('getWheelSymbolsToProcess:', getWheelSymbolsToProcess)
@@ -219,7 +219,10 @@ class Trader(wrapper.EWrapper, EClient):
             '  AND contract.symbol = ?'
             , t)
         r = c.fetchone()
-        getWheelSymbolNavRatio = float(r[0])
+        if r[0]:
+            getWheelSymbolNavRatio = float(r[0])
+        else:
+            getWheelSymbolNavRatio = 0
         c.close()
         self.db.commit()
         print('getWheelSymbolNavRatio:', getWheelSymbolNavRatio)
@@ -405,13 +408,65 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('UPDATE position SET cost = ?, quantity = ? WHERE portfolio_id = ? AND contract_id = ?', t)
             #print(c.rowcount)
             if (c.rowcount == 0):
-                c.execute("INSERT INTO position(cost, quantity, portfolio_id, contract_id, open_date) VALUES (?, ?, ?, ?, date('now'))", t)
+                c.execute("INSERT INTO position(cost, quantity, portfolio_id, contract_id, open_date) VALUES (?, ?, ?, ?, datetime('now'))", t)
         c.close()
         self.db.commit()
 
     """
+    Contracts related functions
+    """
+
+    def getContractAsk(self, contract: Contract):
+        self.getDbConnection()
+        c = self.db.cursor()
+
+        t = (contract.conId, )
+        c.execute(
+            'SELECT contract.ask ' \
+            ' FROM contract ' \
+            ' WHERE contract.con_id = ?',
+            t)
+        r = c.fetchone()
+        getContractAsk = float(r[0])
+        c.close()
+        print('getContractAsk:', getContractAsk)
+        return getContractAsk
+
+    """
     Symbols related functions
     """
+
+    def getSymbolPrice(self, symbol: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+
+        t = (symbol, )
+        c.execute(
+            'SELECT contract.price ' \
+            ' FROM contract ' \
+            ' WHERE contract.symbol = ?',
+            t)
+        r = c.fetchone()
+        getSymbolPrice = float(r[0])
+        c.close()
+        print('getSymbolPrice:', getSymbolPrice)
+        return getSymbolPrice
+
+    def getSymbolCurrency(self, symbol: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+
+        t = (symbol, )
+        c.execute(
+            'SELECT contract.currency ' \
+            ' FROM contract ' \
+            ' WHERE contract.symbol = ?',
+            t)
+        r = c.fetchone()
+        getSymbolCurrency = r[0]
+        c.close()
+        print('getSymbolCurrency:', getSymbolCurrency)
+        return getSymbolCurrency
 
     def getSymbolPriceInBase(self, account: str, symbol: str):
         self.getDbConnection()
@@ -471,38 +526,6 @@ class Trader(wrapper.EWrapper, EClient):
         print('getContractBuyableQuantity:', getContractBuyableQuantity)
         c.close()
         return getContractBuyableQuantity
-
-    def getSymbolPrice(self, symbol: str):
-        self.getDbConnection()
-        c = self.db.cursor()
-
-        t = (symbol, )
-        c.execute(
-            'SELECT contract.price ' \
-            'FROM contract ' \
-            'WHERE contract.symbol = ?',
-            t)
-        r = c.fetchone()
-        getSymbolPrice = float(r[0])
-        c.close()
-        print('getSymbolPrice:', getSymbolPrice)
-        return getSymbolPrice
-
-    def getSymbolCurrency(self, symbol: str):
-        self.getDbConnection()
-        c = self.db.cursor()
-
-        t = (symbol, )
-        c.execute(
-            'SELECT contract.currency ' \
-            'FROM contract ' \
-            'WHERE contract.symbol = ?',
-            t)
-        r = c.fetchone()
-        getSymbolCurrency = r[0]
-        c.close()
-        print('getSymbolCurrency:', getSymbolCurrency)
-        return getSymbolCurrency
 
     """
     Get Cash positions information
@@ -733,6 +756,34 @@ class Trader(wrapper.EWrapper, EClient):
             print('canceling order:', action, r[0])
             self.cancelOrder(int(r[0]))
         c.close()
+
+    """
+    Get order book information (stocks)
+    """
+
+    def getContractQuantityOnOrderBook(self, account: str, contract: Contract, action: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (account, contract.conId, action, 'Submitted', 'PreSubmitted', )
+        c.execute(
+            'SELECT SUM(remaining_qty) '\
+            'FROM open_order, portfolio, contract ' \
+            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND open_order.contract_id = contract.id AND contract.con_id = ?' \
+            ' AND open_order.action_type = ?' \
+            ' AND open_order.status IN (?, ?)',
+            t)
+        r = c.fetchone()
+        if r[0]:
+            if action == 'BUY':
+                getContractQuantityOnOrderBook = float(r[0])
+            elif action == 'SELL':
+                getContractQuantityOnOrderBook = -float(r[0])
+        else:
+            getContractQuantityOnOrderBook = 0
+        c.close()
+        print('getContractQuantityOnOrderBook:', getContractQuantityOnOrderBook)
+        return getContractQuantityOnOrderBook
 
     """
     Get order book information (stocks)
@@ -1157,13 +1208,50 @@ class Trader(wrapper.EWrapper, EClient):
             marketPrice: float, marketValue: float,
             averageCost: float, unrealizedPNL: float,
             realizedPNL: float, accountName: str):
-        if (not self.portfolioLoaded) or (not self.ordersLoaded):
+        print("rollOptionIfNeeded.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
+              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+              "MarketValue:", marketValue, "AverageCost:", averageCost,
+              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+              "AccountName:", accountName)
+        if (not self.ordersLoaded) or (not self.optionContractsAvailable):
             return
         print('rollOptionIfNeeded.', 'contract:', contract)
+        position += self.getContractQuantityOnOrderBook(accountName, contract, 'BUY')
+        print('net position:', position)
         if (position < 0):
             underlying_price = self.getUnderlyingPrice(contract)
-            if ((contract.right == 'C' and underlying_price > contract.strike) or (contract.right == 'P' and underlying_price < contract.strike)):
-                print('need to roll ITM contract', contract)
+            if (contract.right == 'C' and underlying_price > contract.strike):
+                print('need to roll ITM Call', contract)
+                # search for replacement contracts
+                # select option contracts which match:
+                #   same right (Call/Call)
+                #   strike >= underlying price
+                #   maturity = current maturity
+                #   same underlying stock
+                #   bid >= current ask
+                t = (contract.conId, )
+                self.getDbConnection()
+                c = self.db.cursor()
+                c.execute(
+                    'SELECT contract.con_id, '
+                    '  option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
+                    '  julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask)/ option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360, '
+                    '  contract.bid, contract.ask, option.delta '
+                    ' FROM contract, option, contract contract_ref, option option_ref'
+                    ' WHERE contract_ref.con_id = ?'
+                    '  AND contract_ref.id = option_ref.id'
+                    '  AND option_ref.stock_id = option.stock_id'
+                    '  AND contract.id = option.id'
+                    '  AND option.last_trade_date > option_ref.last_trade_date'
+                    '  AND contract_ref.ask <= contract.bid'
+                    '  AND option_ref.call_or_put = option.call_or_put'
+                    '  AND option.strike >= option_ref.strike'
+                    , t)
+                opt = c.fetchall()
+                print(opt)
+                c.close()
+            if (contract.right == 'P' and underlying_price < contract.strike):
+                print('need to roll ITM Put', contract)
 
     """
     IB API wrappers
@@ -1206,7 +1294,7 @@ class Trader(wrapper.EWrapper, EClient):
         c = self.db.cursor()
         t = (price, reqId, )
         if tickType == TickTypeEnum.LAST:
-            c.execute('UPDATE contract SET price = ? WHERE api_req_id = ?', t)
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\', \'localtime\') WHERE api_req_id = ?', t)
         elif tickType == TickTypeEnum.BID:
             c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
         elif tickType == TickTypeEnum.ASK:
@@ -1227,33 +1315,35 @@ class Trader(wrapper.EWrapper, EClient):
     def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int,
                               impliedVol: float, delta: float, optPrice: float, pvDividend: float,
                               gamma: float, vega: float, theta: float, undPrice: float):
+#        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType,
+#            "TickAttrib:", tickAttrib,
+#            "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:",
+#            optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega,
+#            "Theta:", theta, "UnderlyingPrice:", undPrice)
         super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta,
                                       optPrice, pvDividend, gamma, vega, theta, undPrice)
-#        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType,
- #             "TickAttrib:", tickAttrib,
-  #            "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:",
-   #           optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega,
-    #          "Theta:", theta, "UnderlyingPrice:", undPrice)
-        if tickType == TickTypeEnum.MODEL_OPTION:
-            self.getDbConnection()
-            c = self.db.cursor()
-            t = (optPrice, reqId, )
-# tickPrice in charge of this            c.execute('UPDATE contract SET price = ? WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (optPrice, reqId, )
+        if tickType == TickTypeEnum.MODEL_OPTION: # 13
+# à priori ça n'est pas le prix mais peut-être le prix théorique
+#            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\', \'localtime\') WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
             t = (impliedVol, delta, pvDividend, gamma, vega, theta, reqId, )
             c.execute(
                 'UPDATE option '
-                'SET Implied_Volatility = ?, Delta = ?, pv_Dividend = ?, Gamma = ?, Vega = ?, Theta = ? '
-                'WHERE option.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
+                ' SET Implied_Volatility = ?, Delta = ?, pv_Dividend = ?, Gamma = ?, Vega = ?, Theta = ? '
+                ' WHERE option.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
                 t)
-            c.close()
-            self.db.commit()
-        elif ((tickType == TickTypeEnum.BID_OPTION_COMPUTATION)
-            or (tickType == TickTypeEnum.ASK_OPTION_COMPUTATION)
-            or (tickType == TickTypeEnum.LAST_OPTION_COMPUTATION)):
-#            print('TickOptionComputation. ignored type:', tickType, 'for reqId:', reqId)
-            pass
+        elif tickType == TickTypeEnum.BID_OPTION_COMPUTATION:
+            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:
+            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\', \'localtime\') WHERE api_req_id = ?', t)
         else:
             print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
+        c.close()
+        self.db.commit()
     # ! [tickoptioncomputation]
 
     @iswrapper
@@ -1277,6 +1367,9 @@ class Trader(wrapper.EWrapper, EClient):
             self.wheelSymbolsExpirations = sorted(expirations)
             self.wheelSymbolsProcessingStrikes = sorted(strikes)
             self.wheelSymbolsProcessing = tradingClass
+            # for testing
+#            self.wheelSymbolsExpirations = [ '20210716' ]
+#            self.wheelSymbolsProcessingStrikes = [ 125.0 ]
     # ! [securityDefinitionOptionParameter]
 
     @iswrapper
@@ -1338,6 +1431,11 @@ class Trader(wrapper.EWrapper, EClient):
                         marketPrice: float, marketValue: float,
                         averageCost: float, unrealizedPNL: float,
                         realizedPNL: float, accountName: str):
+#        print("updatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
+#              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+#              "MarketValue:", marketValue, "AverageCost:", averageCost,
+#              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+#              "AccountName:", accountName)
         super().updatePortfolio(contract, position, marketPrice, marketValue,
                                 averageCost, unrealizedPNL, realizedPNL, accountName)
         if (contract.secType != 'UNK') and (contract.secType != 'CASH'):
@@ -1349,7 +1447,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.getDbConnection()
             c = self.db.cursor()
             t = (marketPrice, cid)
-            c.execute('UPDATE contract SET price = ? WHERE id = ?', t)
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\', \'localtime\') WHERE id = ?', t)
             c.close()
             self.db.commit()
             if (contract.secType == 'STK'):
