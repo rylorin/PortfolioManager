@@ -67,7 +67,7 @@ class Trader(wrapper.EWrapper, EClient):
         self.portfolioLoaded = False
         self.ordersLoaded = False
         self.optionContractsAvailable = False
-        self.optionContractsAvailable = True    # for testing
+#        self.optionContractsAvailable = True    # for testing
         self.lastCashAdjust = None
         self.lastNakedPutsSale = None
         self.nextTickerId = 1024
@@ -897,7 +897,7 @@ class Trader(wrapper.EWrapper, EClient):
         self.nextWheelProcess = seconds + 2
         if (self.wheelSymbolsProcessingSymbol == None) and (len(self.wheelSymbolsToProcess) == 0):
             self.wheelSymbolsToProcess = self.getWheelSymbolsToProcess(self.account)
-            self.wheelSymbolsProcessed = self.wheelSymbolsToProcess # for testing
+#            self.wheelSymbolsProcessed = self.wheelSymbolsToProcess # for testing
 
         print(
             'self.wheelSymbolsToProcess:', len(self.wheelSymbolsToProcess),
