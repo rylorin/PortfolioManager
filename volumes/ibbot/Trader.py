@@ -86,7 +86,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.db = sqlite3.connect('../db/var/db/data.db')
         return self.db
 
-    def clearApiReqId(self):
+    def clearAllApiReqId(self):
         self.getDbConnection()
         c = self.db.cursor()
         c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id NOT NULL')
@@ -994,6 +994,387 @@ class Trader(wrapper.EWrapper, EClient):
             self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
 
     """
+    IB API wrappers
+    """
+
+    @iswrapper
+    # ! [error]
+    def error(self, reqId: TickerId, errorCode: int, errorString: str):
+        if errorCode == 162:
+            # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
+            super().error(reqId, errorCode, errorString)
+            self.clearRequestId(reqId)
+        elif errorCode == 200:
+            # 'No security definition has been found for the request':
+#            super().error(reqId, errorCode, errorString)
+            self.clearRequestId(reqId)
+        elif errorCode == 321:
+            # Error validating request.-'bW' : cause - Snapshot requests limitation exceeded:100 per 1 second(s)
+            super().error(reqId, errorCode, errorString)
+            self.clearRequestId(reqId)
+        elif errorCode == 10090:
+            # Part of requested market data is not subscribed. Subscription-independent ticks are still active.Delayed market data is not available
+#            super().error(reqId, errorCode, errorString)
+            pass
+        else:
+            super().error(reqId, errorCode, errorString)
+            self.clearRequestId(reqId)
+    # ! [error] self.XreqId2nErr[reqId] += 1
+
+    @iswrapper
+    # ! [tickprice]
+    def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
+#        print("TickPrice. TickerId:", reqId, "tickType:", tickType, "Price:", price, "CanAutoExecute:", attrib.canAutoExecute, "PastLimit:", attrib.pastLimit, "PreOpen:", attrib.preOpen)
+        super().tickPrice(reqId, tickType, price, attrib)
+        if price < 0:
+            price = None
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (price, reqId, )
+        if tickType == TickTypeEnum.LAST:   # 4
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.BID:  # 1
+            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.ASK:  # 2
+            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.CLOSE:    # 9
+            c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
+        elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
+            pass
+        else:
+            print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
+        c.close()
+        self.db.commit()
+    # ! [tickprice]
+
+    @iswrapper
+    # ! [tickoptioncomputation]
+    def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int,
+                              impliedVol: float, delta: float, optPrice: float, pvDividend: float,
+                              gamma: float, vega: float, theta: float, undPrice: float):
+#        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType, "TickAttrib:", tickAttrib, "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:", optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega, "Theta:", theta, "UnderlyingPrice:", undPrice)
+        super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta,
+                                      optPrice, pvDividend, gamma, vega, theta, undPrice)
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (optPrice, reqId, )
+        if tickType == TickTypeEnum.MODEL_OPTION: # 13
+# à priori ça n'est pas le prix mais peut-être le prix théorique
+#            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
+            t = (impliedVol, delta, pvDividend, gamma, vega, theta, reqId, )
+            c.execute(
+                'UPDATE option '
+                ' SET Implied_Volatility = ?, Delta = ?, pv_Dividend = ?, Gamma = ?, Vega = ?, Theta = ? '
+                ' WHERE option.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
+                t)
+        elif tickType == TickTypeEnum.BID_OPTION_COMPUTATION:   # 10
+            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:   # 11
+            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+        elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+        else:
+            print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
+        c.close()
+        self.db.commit()
+    # ! [tickoptioncomputation]
+
+    @iswrapper
+    # ! [ticksnapshotend]
+    def tickSnapshotEnd(self, reqId: int):
+        super().tickSnapshotEnd(reqId)
+        self.clearRequestIdAndContinue(reqId)
+    # ! [ticksnapshotend]
+
+    @iswrapper
+    # ! [securityDefinitionOptionParameter]
+    def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
+                                          underlyingConId: int, tradingClass: str, multiplier: str,
+                                          expirations: SetOfString, strikes: SetOfFloat):
+        super().securityDefinitionOptionParameter(reqId, exchange,
+                                                underlyingConId, tradingClass, multiplier, expirations, strikes)
+        if exchange == "SMART":
+#            print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
+            self.getDbConnection()
+            c = self.db.cursor()
+            t = (underlyingConId, )
+            c.execute(
+                'UPDATE contract'
+                '    SET ask = NULL, bid = NULL'
+                '    WHERE contract.id IN ('
+                '        SELECT option.id'
+                '            FROM option, contract stock_contract'
+                '            WHERE option.stock_id = stock_contract.id'
+                '                AND stock_contract.con_id = ?)'
+                , t)
+            c.close()
+            self.db.commit()
+            self.wheelSymbolsExpirations = sorted(expirations)
+            self.wheelSymbolsProcessingStrikes = sorted(strikes)
+            self.wheelSymbolsProcessingSymbol = tradingClass
+            # for testing
+#            self.wheelSymbolsExpirations = [ '20210622', '20210625' ]
+#            self.wheelSymbolsProcessingStrikes = [ 422.0, 422.5 ]
+    # ! [securityDefinitionOptionParameter]
+
+    @iswrapper
+    # ! [securityDefinitionOptionParameterEnd]
+    def securityDefinitionOptionParameterEnd(self, reqId: int):
+        super().securityDefinitionOptionParameterEnd(reqId)
+        # Just got options information, we should be able to start processing immediately
+        self.nextWheelProcess = time.time()
+        self.clearRequestId(reqId)
+    # ! [securityDefinitionOptionParameterEnd]
+
+    @iswrapper
+    # ! [updateaccountvalue]
+    def updateAccountValue(self, key: str, val: str, currency: str,
+                           accountName: str):
+        super().updateAccountValue(key, val, currency, accountName)
+        self.getDbConnection()
+        if (key == 'CashBalance') and (currency != 'BASE'):
+            # update currency cash value
+            c = self.db.cursor()
+            id = self.findPortfolio(accountName)
+            t = (val, id, currency)
+            #print(t)
+            c.execute('UPDATE balance SET quantity = ? WHERE portfolio_id = ? AND currency = ?', t)
+            #print(c.rowcount)
+            if (c.rowcount == 0) and (val != 0):
+                c.execute('INSERT INTO balance(quantity, portfolio_id, currency) VALUES (?, ?, ?)', t)
+            c.close()
+            self.db.commit()
+        elif (key == 'ExchangeRate') and (currency != 'BASE'):
+            # update exchange rate
+            c = self.db.cursor()
+            t = (accountName, )
+            c.execute('SELECT id, base_currency FROM portfolio WHERE account = ?', t)
+            r = c.fetchone()
+            #print(r)
+            id = r[0]
+            base = r[1]
+            t = (val, base, currency)
+            c.execute('UPDATE currency SET rate = 1.0/? WHERE base = ? AND currency = ?', t)
+            #print(c.rowcount)
+            if (c.rowcount == 0):
+                c.execute('INSERT INTO currency(rate, base, currency) VALUES (1.0/?, ?, ?)', t)
+            t = (val, currency, base)
+            c.execute('UPDATE currency SET rate = ? WHERE base = ? AND currency = ?', t)
+            #print(c.rowcount)
+            if (c.rowcount == 0):
+                c.execute('INSERT INTO currency(rate, base, currency) VALUES (?, ?, ?)', t)
+            c.close()
+            self.db.commit()
+        elif (key == 'NetLiquidationByCurrency') and (currency == 'BASE'):
+            self.portfolioNAV = float(val)
+    # ! [updateaccountvalue]
+
+    @iswrapper
+    # ! [updateportfolio]
+    def updatePortfolio(self, contract: Contract, position: float,
+                        marketPrice: float, marketValue: float,
+                        averageCost: float, unrealizedPNL: float,
+                        realizedPNL: float, accountName: str):
+#        print("updatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
+#              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
+#              "MarketValue:", marketValue, "AverageCost:", averageCost,
+#              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
+#              "AccountName:", accountName)
+        super().updatePortfolio(contract, position, marketPrice, marketValue,
+                                averageCost, unrealizedPNL, realizedPNL, accountName)
+        if (contract.secType != 'UNK') and (contract.secType != 'CASH'):
+            # very surprising, contract.strike is correct inside position callback, but is in pence in updatePortfolio callback
+            if contract.currency == 'GBP':
+                contract.strike /= 100.0
+            self.findOrCreateContract(contract)
+            self.createOrUpdatePosition(contract, position, averageCost, accountName)
+            self.getDbConnection()
+            c = self.db.cursor()
+            t = (marketPrice, contract.conId)
+            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE contract.con_id = ?', t)
+            c.close()
+            self.db.commit()
+            if (contract.secType == 'STK'):
+                self.sellCoveredCallsIfPossible(contract, position, marketPrice, marketValue,
+                    averageCost, unrealizedPNL, realizedPNL, accountName)
+            elif (contract.secType == 'OPT'):
+                self.rollOptionIfNeeded(contract, position, marketPrice, marketValue,
+                    averageCost, unrealizedPNL, realizedPNL, accountName)
+
+    # ! [updateportfolio]
+
+    @iswrapper
+    # ! [accountdownloadend]
+    def accountDownloadEnd(self, accountName: str):
+        super().accountDownloadEnd(accountName)
+        self.portfolioLoaded = True
+    # ! [accountdownloadend]
+
+    @iswrapper
+    # ! [openorder]
+    def openOrder(self, orderId: OrderId, contract: Contract, order: Order,
+                  orderState: OrderState):
+        super().openOrder(orderId, contract, order, orderState)
+        self.getDbConnection()
+        c = self.db.cursor()
+        # Update OpenOrder table
+        t = (orderId, )
+        c.execute('SELECT id, contract_id FROM open_order WHERE order_id = ?', t)
+        r = c.fetchone()
+        if not r:
+            portfolio_id = self.findPortfolio(order.account)
+            contract_id = self.findOrCreateContract(contract)
+            if contract_id:
+                t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, order.action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
+                c.execute(
+                    'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
+                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    t)  # better use permid
+        c.close()
+        self.db.commit()
+    # ! [openorder]
+
+    @iswrapper
+    # ! [openorderend]
+    def openOrderEnd(self):
+        super().openOrderEnd()
+        self.ordersLoaded = True
+    # ! [openorderend]
+
+    @iswrapper
+    # ! [orderstatus]
+    def orderStatus(self, orderId: OrderId, status: str, filled: float,
+                    remaining: float, avgFillPrice: float, permId: int,
+                    parentId: int, lastFillPrice: float, clientId: int,
+                    whyHeld: str, mktCapPrice: float):
+        super().orderStatus(orderId, status, filled, remaining,
+                            avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+        # Update OpenOrder
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (status, remaining, orderId, )
+        c.execute('UPDATE open_order SET status = ?, remaining_qty = ? WHERE order_id = ?', t)  # better use permid
+        c.close()
+        self.db.commit()
+    # ! [orderstatus]
+
+    @iswrapper
+    # ! [historicaldata]
+    def historicalData(self, reqId:int, bar: BarData):
+        super().historicalData(reqId, bar)
+#        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (bar.close, reqId, )
+        c.execute(
+            'UPDATE stock '
+            ' SET Historical_Volatility = ? '
+            ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
+            t)
+        if c.rowcount != 1:
+            print('failed to store volatility')
+        else:
+            print(c.rowcount, 'record(s) updated with historycal volatility')
+        c.close()
+        self.db.commit()
+    # ! [historicaldata]
+
+    @iswrapper
+    # ! [historicaldataend]
+    def historicalDataEnd(self, reqId: int, start: str, end: str):
+        super().historicalDataEnd(reqId, start, end)
+#        print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
+        count = self.clearRequestIdAndContinue(reqId)
+    # ! [historicaldataend]
+
+    @iswrapper
+    # ! [contractdetails]
+    def contractDetails(self, reqId: int, contractDetails: ContractDetails):
+        super().contractDetails(reqId, contractDetails)
+        self.findOrCreateContract(contractDetails.contract)
+        if contractDetails.contract.secType == 'STK':
+            self.getDbConnection()
+            c = self.db.cursor()
+            t = (contractDetails.industry, contractDetails.category, contractDetails.subcategory, contractDetails.contract.conId, )
+            c.execute('UPDATE stock SET industry = ?, category = ?, subcategory = ? WHERE id = (SELECT id FROM contract WHERE contract.con_id = ?)', t)
+            nextReqId = self.getNextTickerId()
+            t = (nextReqId, contractDetails.contract.conId, )
+            c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
+            c.close()
+            self.db.commit()
+#            print('requesting reqHistoricalData with id', nextReqId, contractDetails.contract)
+            queryTime = (datetime.datetime.today() - datetime.timedelta(days=180)).strftime("%Y%m%d %H:%M:%S")
+            queryTime = (datetime.datetime.today()).strftime("%Y%m%d 00:00:00")
+            queryTime = ""
+            self.reqHistoricalData(nextReqId, contractDetails.contract, queryTime,
+                "2 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
+        elif contractDetails.contract.secType == 'OPT':
+            self.getDbConnection()
+            c = self.db.cursor()
+            nextReqId = self.getNextTickerId()
+            t = (nextReqId, contractDetails.contract.conId, )
+            c.execute(
+                'UPDATE contract '
+                'SET ask = NULL, price = NULL, bid = NULL, previous_close_price = NULL, api_req_id = ? '
+                'WHERE contract.con_id = ?', t)
+            c.close()
+            self.db.commit()
+            self.reqMktData(nextReqId, contractDetails.contract, "", True, False, [])
+    # ! [contractdetails]
+
+    @iswrapper
+    # ! [contractdetailsend]
+    def contractDetailsEnd(self, reqId: int):
+        super().contractDetailsEnd(reqId)
+        if (self.clearRequestId(reqId) != -1):
+            print('contractDetailsEnd with known id:', reqId)
+    # ! [contractdetailsend]
+
+    @iswrapper
+    # ! [managedaccounts]
+    def managedAccounts(self, accountsList: str):
+        super().managedAccounts(accountsList)
+        if self.account:
+            return
+        else:
+            # first time
+            self.account = accountsList.split(",")[0]
+            self.wheelSymbolsToProcess = []
+            self.wheelSymbolsProcessingSymbol = None
+            self.wheelSymbolsProcessingStrikes = []
+            self.wheelSymbolsExpirations = []
+            self.wheelSymbolsProcessed = []
+
+            self.lastCashAdjust = 0
+            self.lastNakedPutsSale = 0
+            self.nextWheelProcess = time.time()
+            self.lastWheelProcess = 0
+
+            self.clearAllApiReqId()
+            self.clearPortfolioBalances(self.account)
+            self.clearPortfolioPositions(self.account)
+            self.clearOpenOrders(self.account)
+
+            self.reqMarketDataType(MarketDataTypeEnum.DELAYED_FROZEN)
+            # start account updates
+            self.reqAccountUpdates(True, self.account)
+            # Requesting the next valid id. The parameter is always ignored.
+            self.reqIds(-1)
+            self.reqOpenOrders()
+    # ! [managedaccounts]
+
+    @iswrapper
+    def updateAccountTime(self, timeStamp: str):
+        super().updateAccountTime(timeStamp)
+#        print("UpdateAccountTime. Time:", timeStamp)
+        if self.started:
+            # perform regular tasks
+            self.findWheelSymbolsInfo()
+            self.sellNakedPuts()
+            self.adjustCash()
+    # ! [updateaccounttime]
+
+    """
     Trading functions
     """
 
@@ -1292,379 +1673,6 @@ class Trader(wrapper.EWrapper, EClient):
                 c.close()
 
     """
-    IB API wrappers
-    """
-
-    @iswrapper
-    # ! [error]
-    def error(self, reqId: TickerId, errorCode: int, errorString: str):
-        if errorCode == 162:
-            # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
-            super().error(reqId, errorCode, errorString)
-            self.clearRequestId(reqId)
-        elif errorCode == 200:
-            # 'No security definition has been found for the request':
-#            super().error(reqId, errorCode, errorString)
-            self.clearRequestId(reqId)
-        elif errorCode == 321:
-            # Error validating request.-'bW' : cause - Snapshot requests limitation exceeded:100 per 1 second(s)
-            super().error(reqId, errorCode, errorString)
-            self.clearRequestId(reqId)
-        elif errorCode == 10090:
-            # Part of requested market data is not subscribed. Subscription-independent ticks are still active.Delayed market data is not available
-#            super().error(reqId, errorCode, errorString)
-            pass
-        else:
-            super().error(reqId, errorCode, errorString)
-            self.clearRequestId(reqId)
-    # ! [error] self.XreqId2nErr[reqId] += 1
-
-    @iswrapper
-    # ! [tickprice]
-    def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
-#        print("TickPrice. TickerId:", reqId, "tickType:", tickType, "Price:", price, "CanAutoExecute:", attrib.canAutoExecute, "PastLimit:", attrib.pastLimit, "PreOpen:", attrib.preOpen)
-        super().tickPrice(reqId, tickType, price, attrib)
-        if price < 0:
-            price = None
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (price, reqId, )
-        if tickType == TickTypeEnum.LAST:   # 4
-            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.BID:  # 1
-            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.ASK:  # 2
-            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.CLOSE:    # 9
-            c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
-        elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
-            pass
-        else:
-            print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
-        c.close()
-        self.db.commit()
-    # ! [tickprice]
-
-    @iswrapper
-    # ! [tickoptioncomputation]
-    def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int,
-                              impliedVol: float, delta: float, optPrice: float, pvDividend: float,
-                              gamma: float, vega: float, theta: float, undPrice: float):
-#        print("TickOptionComputation. TickerId:", reqId, "TickType:", tickType, "TickAttrib:", tickAttrib, "ImpliedVolatility:", impliedVol, "Delta:", delta, "OptionPrice:", optPrice, "pvDividend:", pvDividend, "Gamma: ", gamma, "Vega:", vega, "Theta:", theta, "UnderlyingPrice:", undPrice)
-        super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta,
-                                      optPrice, pvDividend, gamma, vega, theta, undPrice)
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (optPrice, reqId, )
-        if tickType == TickTypeEnum.MODEL_OPTION: # 13
-# à priori ça n'est pas le prix mais peut-être le prix théorique
-#            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
-            t = (impliedVol, delta, pvDividend, gamma, vega, theta, reqId, )
-            c.execute(
-                'UPDATE option '
-                ' SET Implied_Volatility = ?, Delta = ?, pv_Dividend = ?, Gamma = ?, Vega = ?, Theta = ? '
-                ' WHERE option.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
-                t)
-        elif tickType == TickTypeEnum.BID_OPTION_COMPUTATION:   # 10
-            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:   # 11
-            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
-            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
-        else:
-            print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
-        c.close()
-        self.db.commit()
-    # ! [tickoptioncomputation]
-
-    @iswrapper
-    # ! [ticksnapshotend]
-    def tickSnapshotEnd(self, reqId: int):
-        super().tickSnapshotEnd(reqId)
-        self.clearRequestIdAndContinue(reqId)
-    # ! [ticksnapshotend]
-
-    @iswrapper
-    # ! [securityDefinitionOptionParameter]
-    def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
-                                          underlyingConId: int, tradingClass: str, multiplier: str,
-                                          expirations: SetOfString, strikes: SetOfFloat):
-        super().securityDefinitionOptionParameter(reqId, exchange,
-                                                underlyingConId, tradingClass, multiplier, expirations, strikes)
-        if exchange == "SMART":
-#            print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
-            self.getDbConnection()
-            c = self.db.cursor()
-            t = (underlyingConId, )
-            c.execute(
-                'UPDATE contract'
-                '    SET ask = NULL, bid = NULL'
-                '    WHERE contract.id IN ('
-                '        SELECT option.id'
-                '            FROM option, contract stock_contract'
-                '            WHERE option.stock_id = stock_contract.id'
-                '                AND stock_contract.con_id = ?)'
-                , t)
-            c.close()
-            self.db.commit()
-            self.wheelSymbolsExpirations = sorted(expirations)
-            self.wheelSymbolsProcessingStrikes = sorted(strikes)
-            self.wheelSymbolsProcessingSymbol = tradingClass
-            # for testing
-#            self.wheelSymbolsExpirations = [ '20210622', '20210625' ]
-#            self.wheelSymbolsProcessingStrikes = [ 422.0, 422.5 ]
-    # ! [securityDefinitionOptionParameter]
-
-    @iswrapper
-    # ! [securityDefinitionOptionParameterEnd]
-    def securityDefinitionOptionParameterEnd(self, reqId: int):
-        super().securityDefinitionOptionParameterEnd(reqId)
-        # Just got options information, we should be able to start processing immediately
-        self.nextWheelProcess = time.time()
-        self.clearRequestId(reqId)
-    # ! [securityDefinitionOptionParameterEnd]
-
-    @iswrapper
-    # ! [updateaccountvalue]
-    def updateAccountValue(self, key: str, val: str, currency: str,
-                           accountName: str):
-        super().updateAccountValue(key, val, currency, accountName)
-        self.getDbConnection()
-        if (key == 'CashBalance') and (currency != 'BASE'):
-            # update currency cash value
-            c = self.db.cursor()
-            id = self.findPortfolio(accountName)
-            t = (val, id, currency)
-            #print(t)
-            c.execute('UPDATE balance SET quantity = ? WHERE portfolio_id = ? AND currency = ?', t)
-            #print(c.rowcount)
-            if (c.rowcount == 0) and (val != 0):
-                c.execute('INSERT INTO balance(quantity, portfolio_id, currency) VALUES (?, ?, ?)', t)
-            c.close()
-            self.db.commit()
-        elif (key == 'ExchangeRate') and (currency != 'BASE'):
-            # update exchange rate
-            c = self.db.cursor()
-            t = (accountName, )
-            c.execute('SELECT id, base_currency FROM portfolio WHERE account = ?', t)
-            r = c.fetchone()
-            #print(r)
-            id = r[0]
-            base = r[1]
-            t = (val, base, currency)
-            c.execute('UPDATE currency SET rate = 1.0/? WHERE base = ? AND currency = ?', t)
-            #print(c.rowcount)
-            if (c.rowcount == 0):
-                c.execute('INSERT INTO currency(rate, base, currency) VALUES (1.0/?, ?, ?)', t)
-            t = (val, currency, base)
-            c.execute('UPDATE currency SET rate = ? WHERE base = ? AND currency = ?', t)
-            #print(c.rowcount)
-            if (c.rowcount == 0):
-                c.execute('INSERT INTO currency(rate, base, currency) VALUES (?, ?, ?)', t)
-            c.close()
-            self.db.commit()
-        elif (key == 'NetLiquidationByCurrency') and (currency == 'BASE'):
-            self.portfolioNAV = float(val)
-    # ! [updateaccountvalue]
-
-    @iswrapper
-    # ! [updateportfolio]
-    def updatePortfolio(self, contract: Contract, position: float,
-                        marketPrice: float, marketValue: float,
-                        averageCost: float, unrealizedPNL: float,
-                        realizedPNL: float, accountName: str):
-#        print("updatePortfolio.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:",
-#              contract.exchange, "Position:", position, "MarketPrice:", marketPrice,
-#              "MarketValue:", marketValue, "AverageCost:", averageCost,
-#              "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL,
-#              "AccountName:", accountName)
-        super().updatePortfolio(contract, position, marketPrice, marketValue,
-                                averageCost, unrealizedPNL, realizedPNL, accountName)
-        if (contract.secType != 'UNK') and (contract.secType != 'CASH'):
-            # very surprising, contract.strike is correct inside position callback, but is in pence in updatePortfolio callback
-            if contract.currency == 'GBP':
-                contract.strike /= 100.0
-            self.findOrCreateContract(contract)
-            self.createOrUpdatePosition(contract, position, averageCost, accountName)
-            self.getDbConnection()
-            c = self.db.cursor()
-            t = (marketPrice, contract.conId)
-            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE contract.con_id = ?', t)
-            c.close()
-            self.db.commit()
-            if (contract.secType == 'STK'):
-                self.sellCoveredCallsIfPossible(contract, position, marketPrice, marketValue,
-                    averageCost, unrealizedPNL, realizedPNL, accountName)
-            elif (contract.secType == 'OPT'):
-                self.rollOptionIfNeeded(contract, position, marketPrice, marketValue,
-                    averageCost, unrealizedPNL, realizedPNL, accountName)
-
-    # ! [updateportfolio]
-
-    @iswrapper
-    # ! [accountdownloadend]
-    def accountDownloadEnd(self, accountName: str):
-        super().accountDownloadEnd(accountName)
-        self.portfolioLoaded = True
-    # ! [accountdownloadend]
-
-    @iswrapper
-    # ! [openorder]
-    def openOrder(self, orderId: OrderId, contract: Contract, order: Order,
-                  orderState: OrderState):
-        super().openOrder(orderId, contract, order, orderState)
-        self.getDbConnection()
-        c = self.db.cursor()
-        # Update OpenOrder table
-        t = (orderId, )
-        c.execute('SELECT id, contract_id FROM open_order WHERE order_id = ?', t)
-        r = c.fetchone()
-        if not r:
-            portfolio_id = self.findPortfolio(order.account)
-            contract_id = self.findOrCreateContract(contract)
-            if contract_id:
-                t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, order.action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
-                c.execute(
-                    'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
-                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    t)  # better use permid
-        c.close()
-        self.db.commit()
-    # ! [openorder]
-
-    @iswrapper
-    # ! [openorderend]
-    def openOrderEnd(self):
-        super().openOrderEnd()
-        self.ordersLoaded = True
-    # ! [openorderend]
-
-    @iswrapper
-    # ! [orderstatus]
-    def orderStatus(self, orderId: OrderId, status: str, filled: float,
-                    remaining: float, avgFillPrice: float, permId: int,
-                    parentId: int, lastFillPrice: float, clientId: int,
-                    whyHeld: str, mktCapPrice: float):
-        super().orderStatus(orderId, status, filled, remaining,
-                            avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
-        # Update OpenOrder
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (status, remaining, orderId, )
-        c.execute('UPDATE open_order SET status = ?, remaining_qty = ? WHERE order_id = ?', t)  # better use permid
-        c.close()
-        self.db.commit()
-    # ! [orderstatus]
-
-    @iswrapper
-    # ! [historicaldata]
-    def historicalData(self, reqId:int, bar: BarData):
-        super().historicalData(reqId, bar)
-#        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (bar.close, reqId, )
-        c.execute(
-            'UPDATE stock '
-            ' SET Historical_Volatility = ? '
-            ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
-            t)
-        c.close()
-        self.db.commit()
-    # ! [historicaldata]
-
-    @iswrapper
-    # ! [historicaldataend]
-    def historicalDataEnd(self, reqId: int, start: str, end: str):
-        super().historicalDataEnd(reqId, start, end)
-#        print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
-        count = self.clearRequestIdAndContinue(reqId)
-    # ! [historicaldataend]
-
-    @iswrapper
-    # ! [contractdetails]
-    def contractDetails(self, reqId: int, contractDetails: ContractDetails):
-        super().contractDetails(reqId, contractDetails)
-        self.findOrCreateContract(contractDetails.contract)
-        nextReqId = self.getNextTickerId()
-        self.getDbConnection()
-        c = self.db.cursor()
-        if contractDetails.contract.secType == 'STK':
-            t = (contractDetails.industry, contractDetails.category, contractDetails.subcategory, contractDetails.contract.conId, )
-            c.execute('UPDATE stock SET industry = ?, category = ?, subcategory = ? WHERE id = (SELECT id FROM contract WHERE contract.con_id = ?)', t)
-            t = (nextReqId, contractDetails.contract.conId, )
-            c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
-        elif contractDetails.contract.secType == 'OPT':
-            t = (nextReqId, contractDetails.contract.conId, )
-            c.execute(
-                'UPDATE contract '
-                'SET ask = NULL, price = NULL, bid = NULL, previous_close_price = NULL, api_req_id = ? '
-                'WHERE contract.con_id = ?', t)
-        c.close()
-        self.db.commit()
-        if contractDetails.contract.secType == 'STK':
-#            print('requesting reqHistoricalData with id', nextReqId, contractDetails.contract)
-            queryTime = (datetime.datetime.today() - datetime.timedelta(days=180)).strftime("%Y%m%d %H:%M:%S")
-            queryTime = (datetime.datetime.today()).strftime("%Y%m%d 00:00:00")
-            queryTime = ""
-            self.reqHistoricalData(nextReqId, contractDetails.contract, queryTime,
-                "2 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
-        elif contractDetails.contract.secType == 'OPT':
-            self.reqMktData(nextReqId, contractDetails.contract, "", True, False, [])
-    # ! [contractdetails]
-
-    @iswrapper
-    # ! [contractdetailsend]
-    def contractDetailsEnd(self, reqId: int):
-        super().contractDetailsEnd(reqId)
-        self.clearRequestId(reqId)
-    # ! [contractdetailsend]
-
-    @iswrapper
-    # ! [managedaccounts]
-    def managedAccounts(self, accountsList: str):
-        super().managedAccounts(accountsList)
-        if self.account:
-            return
-        else:
-            # first time
-            self.account = accountsList.split(",")[0]
-            self.wheelSymbolsToProcess = []
-            self.wheelSymbolsProcessingSymbol = None
-            self.wheelSymbolsProcessingStrikes = []
-            self.wheelSymbolsExpirations = []
-            self.wheelSymbolsProcessed = []
-
-            self.lastCashAdjust = 0
-            self.lastNakedPutsSale = 0
-            self.nextWheelProcess = time.time()
-            self.lastWheelProcess = 0
-
-            self.clearApiReqId()
-            self.clearPortfolioBalances(self.account)
-            self.clearPortfolioPositions(self.account)
-            self.clearOpenOrders(self.account)
-
-            self.reqMarketDataType(MarketDataTypeEnum.DELAYED_FROZEN)
-            # start account updates
-            self.reqAccountUpdates(True, self.account)
-            # Requesting the next valid id. The parameter is always ignored.
-            self.reqIds(-1)
-            self.reqOpenOrders()
-    # ! [managedaccounts]
-
-    @iswrapper
-    def updateAccountTime(self, timeStamp: str):
-        super().updateAccountTime(timeStamp)
-#        print("UpdateAccountTime. Time:", timeStamp)
-        if self.started:
-            # perform regular tasks
-            self.findWheelSymbolsInfo()
-            self.sellNakedPuts()
-            self.adjustCash()
-    # ! [updateaccounttime]
-
-    """
     Main Program
     """
     @iswrapper
@@ -1708,6 +1716,6 @@ class Trader(wrapper.EWrapper, EClient):
         # ! [cancelaaccountupdates]
         self.reqAccountUpdates(False, self.account)
         # ! [cancelaaccountupdates]
-        self.clearApiReqId()
+        self.clearAllApiReqId()
         if (self.db):
             self.db.close()
