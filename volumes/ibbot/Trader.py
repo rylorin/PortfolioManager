@@ -68,18 +68,19 @@ class Trader(wrapper.EWrapper, EClient):
         self.portfolioLoaded = False
         self.ordersLoaded = False
         self.optionContractsAvailable = False
-        # self.optionContractsAvailable = True    # for testing
+        self.optionContractsAvailable = True    # for testing
         self.lastCashAdjust = None
         self.lastNakedPutsSale = None
         self.nextTickerId = 1024
-        self.reqContractDetailsProcessingCount = 0
-        self.reqSecDefOptParamsCount = 0
+        # self.reqContractDetailsProcessingCount = 0
+        # self.reqSecDefOptParamsCount = 0
+
+        self.lastWheelProcess = 0
+        self.wheelSymbolsToProcess = []
         self.wheelSymbolsProcessingSymbol = None
         self.wheelSymbolsProcessingStrikes = None
-        self.wheelSymbolsToProcess = None
-        # self.optionsSymbolsCrawler = WheelContractsIterator()
-        self.wheelSymbolsProcessed = None
-        self.lastWheelProcess = 0
+        self.wheelSymbolsExpirations = None
+        self.wheelSymbolsProcessed = []
     
     def getNextTickerId(self):
         self.nextTickerId += 1
@@ -207,7 +208,7 @@ class Trader(wrapper.EWrapper, EClient):
              FROM trading_parameters, contract 
              WHERE contract.id = trading_parameters.stock_id
              GROUP BY contract.symbol
-             ORDER BY nav_ratio_sum DESC
+             ORDER BY nav_ratio_sum DESC, contract.symbol ASC
             """
             )
         getWheelSymbolsToProcess = [item[0] for item in c.fetchall()]
@@ -369,10 +370,14 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('SELECT id FROM option WHERE stock_id = ? AND call_or_put = ? AND strike = ? AND last_trade_date = ?', t)
             r = c.fetchone()
             if not r:
+                if contract.currency == 'GBP':
+                    strike = contract.strike / 100
+                else:
+                    strike = contract.strike
                 t = (contract.secType, '{} {} {:.1f} {}'.format(self.normalizeSymbol(contract.symbol), datetime.datetime.strptime(contract.lastTradeDateOrContractMonth, '%Y%m%d').strftime('%d%b%y').upper(), contract.strike, contract.right), contract.currency, contract.conId, name, )
                 c.execute('INSERT INTO contract(secType, symbol, currency, con_id, name) VALUES (?, ?, ?, ?, ?)', t)
                 id = c.lastrowid
-                t = (id, stockid, contract.right, contract.strike, datetime.datetime.strptime(contract.lastTradeDateOrContractMonth, '%Y%m%d').date(), contract.multiplier)
+                t = (id, stockid, contract.right, strike, datetime.datetime.strptime(contract.lastTradeDateOrContractMonth, '%Y%m%d').date(), contract.multiplier)
                 c.execute('INSERT INTO option(id, stock_id, call_or_put, strike, last_trade_date, multiplier) VALUES (?, ?, ?, ?, ?, ?)', t)
                 c.close()
                 self.db.commit()
@@ -861,14 +866,16 @@ class Trader(wrapper.EWrapper, EClient):
         self.getDbConnection()
         c = self.db.cursor()
         t = (account, putOrCall, action, 'Submitted', 'PreSubmitted')
-        sql = 'SELECT SUM(open_order.remaining_qty * option.multiplier * option.strike / currency.rate) '\
-            'FROM open_order, portfolio, option, contract, currency ' \
-            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND open_order.contract_id = option.id AND option.call_or_put = ? AND option.stock_id = contract.id ' \
-            ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency' \
-            ' AND open_order.action_type = ?' \
-            ' AND open_order.status IN (?, ?)'
+        sql = """
+            SELECT SUM(open_order.remaining_qty * option.multiplier * option.strike / currency.rate)
+            FROM open_order, portfolio, option, contract, currency
+            WHERE open_order.account_id = portfolio.id AND portfolio.account = ?
+             AND open_order.contract_id = option.id AND option.call_or_put = ? AND option.stock_id = contract.id
+             AND contract.currency = currency.currency
+             AND currency.base = portfolio.base_currency
+             AND open_order.action_type = ?
+             AND open_order.status IN (?, ?)
+            """
         if stock:
             t += (stock, )
             sql = sql + ' AND contract.symbol = ? '
@@ -893,105 +900,6 @@ class Trader(wrapper.EWrapper, EClient):
             self.processNextOptionExpiration()
         return count
 
-    def processNextOptionExpiration(self):
-        # print('processNextOptionExpiration.')
-        # We are processing all strikes for each expiration for one stock
-        # self.wheelSymbolsProcessingSymbol: stock symbol being processed
-        # self.wheelSymbolsProcessingStrikes: strikes list associated to process
-        # self.wheelSymbolsProcessingExpirations: expirations list associated to process, one at a time
-        today = date.today()
-        exp = None
-        while len(self.wheelSymbolsExpirations) > 0:
-#                print('expirations:', self.wheelSymbolsExpirations)
-            exp = self.wheelSymbolsExpirations.pop(0)
-            expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
-#                print('expiration selected:', exp, expiration, 'left:', self.wheelSymbolsExpirations)
-            if (expiration - today).days < 65:
-                break
-            exp = None
-        if exp != None:
-            if not self.optionContractsAvailable:
-                # better to void data than using old values, on first scan
-                self.getDbConnection()
-                c = self.db.cursor()
-                c.execute(
-                    """
-                    UPDATE contract
-                    SET ask = NULL, price = NULL, bid = NULL, previous_close_price = NULL, updated = NULL
-                    WHERE contract.id IN (
-                        SELECT option.id
-                            FROM option, contract stock
-                            WHERE option.stock_id = stock.id
-                                AND stock.symbol = ?
-                                AND option.last_trade_date = ?
-                        )
-                    """,
-                    (self.wheelSymbolsProcessingSymbol, expiration, ))
-                c.close()
-                self.db.commit()
-            price = self.getSymbolPrice(self.wheelSymbolsProcessingSymbol)
-            num_requests = 0
-            # atm: first strike index above price
-            for atm in range(len(self.wheelSymbolsProcessingStrikes)):
-                if self.wheelSymbolsProcessingStrikes[atm] >= price:
-                    break
-#                print('atm:', atm)
-            contract = Contract()
-            contract.exchange = 'SMART'
-            contract.secType = 'OPT'
-            contract.lastTradeDateOrContractMonth = exp
-            contract.symbol = self.wheelSymbolsProcessingSymbol
-            # process at most xx strikes in each direction
-            steps = math.ceil(len(self.wheelSymbolsProcessingStrikes) / 100)
-#                print('steps:', steps)
-            # should be 24 but as reqContractDetails callback will submit new request we will 
-            # potentially overcome de 100 simultaneous requests limit
-            # I lower substencially as (maybe) TWS is running it's own querie that counts for the same limit
-            for i in range(0, 19):
-                if (atm-i-1) >= 0:
-                    self.reqContractDetailsProcessingCount += 1
-                    contract.strike = self.wheelSymbolsProcessingStrikes[atm-i-1]
-                    contract.right = 'P'
-                    self.reqContractDetails(self.getNextTickerId(), contract)
-                    num_requests += 1
-
-                    self.reqContractDetailsProcessingCount += 1
-                    contract.right = 'C'
-                    self.reqContractDetails(self.getNextTickerId(), contract)
-                    num_requests += 1
-
-                if (atm+i) < len(self.wheelSymbolsProcessingStrikes):
-                    self.reqContractDetailsProcessingCount += 1
-                    contract.strike = self.wheelSymbolsProcessingStrikes[atm+i]
-                    contract.right = 'C'
-                    self.reqContractDetails(self.getNextTickerId(), contract)
-                    num_requests += 1
-
-                    self.reqContractDetailsProcessingCount += 1
-                    contract.right = 'P'
-                    self.reqContractDetails(self.getNextTickerId(), contract)
-                    num_requests += 1
-                # and no more than 15% distance
-# to debug may be out of bounds                   if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.85)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.15)):
-#                        break
-            print(num_requests, 'reqContractDetails submitted for', self.wheelSymbolsProcessingSymbol, exp)
-        else:
-            print('done with symbol:', self.wheelSymbolsProcessingSymbol)
-            # we are finished with this symbol
-            self.wheelSymbolsProcessed.append(self.wheelSymbolsProcessingSymbol)
-            self.wheelSymbolsProcessingSymbol = None
-            self.wheelSymbolsProcessingStrikes = []
-            if (len(self.wheelSymbolsToProcess) > 0):
-                self.selectNextSymbol()
-            else:
-                print('findWheelSymbolsInfo. All done!')
-                # we are done for some
-                self.lastWheelProcess = time.time()
-                self.optionContractsAvailable = True
-                # Then start again
-                self.wheelSymbolsToProcess = self.wheelSymbolsProcessed
-
-
     """
     IB API wrappers
     """
@@ -999,6 +907,7 @@ class Trader(wrapper.EWrapper, EClient):
     @iswrapper
     # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
+        # super().error(reqId, errorCode, errorString)
         if errorCode == 162:
             # Historical Market Data Service error message:HMDS query returned no data: PFSI@SMART Historical_Volatility
             super().error(reqId, errorCode, errorString)
@@ -1007,7 +916,8 @@ class Trader(wrapper.EWrapper, EClient):
             # 'No security definition has been found for the request':
 #            super().error(reqId, errorCode, errorString)
             if self.clearRequestId(reqId) == -1:
-                self.reqContractDetailsProcessingCount -= 1
+                # self.reqContractDetailsProcessingCount -= 1
+                pass
         elif errorCode == 321:
             # Error validating request.-'bW' : cause - Snapshot requests limitation exceeded:100 per 1 second(s)
             super().error(reqId, errorCode, errorString)
@@ -1019,7 +929,15 @@ class Trader(wrapper.EWrapper, EClient):
         else:
             super().error(reqId, errorCode, errorString)
             self.clearRequestId(reqId)
-    # ! [error] self.XreqId2nErr[reqId] += 1
+            self.getDbConnection()
+            c = self.db.cursor()
+            c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
+            r = c.fetchone()
+            count = int(r[0])
+            c.close()
+            print(count, 'pending requests')
+            # if count == 0:
+            #     self.processNextOptionExpiration()
 
     @iswrapper
     # ! [tickprice]
@@ -1087,13 +1005,14 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [ticksnapshotend]
 
     @iswrapper
+    # reqSecDefOptParams callback
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
                                           underlyingConId: int, tradingClass: str, multiplier: str,
                                           expirations: SetOfString, strikes: SetOfFloat):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
         if exchange == "SMART":
-#            print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
+            print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
             self.getDbConnection()
             c = self.db.cursor()
             t = (underlyingConId, )
@@ -1196,6 +1115,7 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [historicaldataend]
 
     @iswrapper
+    # reqContractDetails callback
     def contractDetails(self, reqId: int, contractDetails: ContractDetails):
         super().contractDetails(reqId, contractDetails)
         # print('contractDetails.', contractDetails)
@@ -1217,6 +1137,8 @@ class Trader(wrapper.EWrapper, EClient):
             queryTime = ""
             self.reqHistoricalData(nextReqId, contractDetails.contract, queryTime,
                 "2 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
+            print('requesting reqSecDefOptParams for', contractDetails.contract)
+            self.reqSecDefOptParams(self.getNextTickerId(), contractDetails.contract.symbol, "", contractDetails.contract.secType, contractDetails.contract.conId)
         elif contractDetails.contract.secType == 'OPT':
             self.getDbConnection()
             c = self.db.cursor()
@@ -1235,7 +1157,7 @@ class Trader(wrapper.EWrapper, EClient):
     @iswrapper
     def contractDetailsEnd(self, reqId: int):
         super().contractDetailsEnd(reqId)
-        self.reqContractDetailsProcessingCount -= 1
+        # self.reqContractDetailsProcessingCount -= 1
         if (self.clearRequestId(reqId) != -1):  # probably always -1
             print('contractDetailsEnd with known id:', reqId)
         # if (self.reqContractDetailsProcessingCount < 3):
@@ -1243,6 +1165,7 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [contractdetailsend]
 
     @iswrapper
+    # reqManagedAccts callback
     def managedAccounts(self, accountsList: str):
         super().managedAccounts(accountsList)
         if self.account:
@@ -1251,10 +1174,10 @@ class Trader(wrapper.EWrapper, EClient):
             # first time
             self.account = accountsList.split(",")[0]
             # self.wheelSymbolsToProcess = []
-            self.wheelSymbolsProcessingSymbol = None
-            self.wheelSymbolsProcessingStrikes = []
-            self.wheelSymbolsExpirations = []
-            self.wheelSymbolsProcessed = []
+            # self.wheelSymbolsProcessingSymbol = None
+            # self.wheelSymbolsProcessingStrikes = []
+            # self.wheelSymbolsExpirations = []
+            # self.wheelSymbolsProcessed = []
 
             self.lastCashAdjust = 0
             self.lastNakedPutsSale = 0
@@ -1275,20 +1198,6 @@ class Trader(wrapper.EWrapper, EClient):
             # self.wheelSymbolsProcessingSymbol = None
             # self.selectNextSymbol()
 
-    def selectNextSymbol(self):
-        self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop(0)
-        contract = Contract()
-        contract.exchange = 'SMART'
-        contract.secType = 'STK'
-        conId = self.getContractConId(self.wheelSymbolsProcessingSymbol)
-        if conId:
-            # try to go without conId. Won't work for reqSecDefOptParams, but reqContractDetails will get it!
-            contract.conId = conId
-        contract.symbol = self.wheelSymbolsProcessingSymbol
-        self.reqContractDetails(self.getNextTickerId(), contract)
-        print('requesting reqSecDefOptParams for', contract)
-        self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
-
     @iswrapper
     def accountDownloadEnd(self, accountName: str):
         super().accountDownloadEnd(accountName)
@@ -1298,7 +1207,7 @@ class Trader(wrapper.EWrapper, EClient):
     @iswrapper
     def updateAccountTime(self, timeStamp: str):
         super().updateAccountTime(timeStamp)
-#        print("UpdateAccountTime. Time:", timeStamp)
+        # print("UpdateAccountTime. Time:", timeStamp)
         if self.started:
             # perform regular tasks
             # self.findWheelSymbolsInfo()
@@ -1307,7 +1216,6 @@ class Trader(wrapper.EWrapper, EClient):
             if (time.time() > (self.lastWheelProcess + self.getFindSymbolsSleep(self.account))) \
                 and (self.wheelSymbolsProcessingSymbol == None) \
                 and (len(self.wheelSymbolsToProcess) == 0):
-                    self.wheelSymbolsToProcess = self.getWheelSymbolsToProcess()
                     self.selectNextSymbol()
                 
     # ! [updateaccounttime]
@@ -1484,65 +1392,66 @@ class Trader(wrapper.EWrapper, EClient):
         puttable_amount += self.getOptionsAmountOnOrderBook(self.account, None, 'P', 'SELL')
         print('puttable_amount:', puttable_amount)
 
-        # select option contracts which match:
-        #   implied volatility > historical volatility
-        #   Put
-        #   OTM
-        #   strike < how much we can engage
-        #   at least 80% success (delta >= -0.2)
-        #   premium at least $0.25
-        t = ('P', puttable_amount/100, -0.2, 0.25, )
-        self.getDbConnection()
-        c = self.db.cursor()
-        c.execute(
-            'SELECT contract.con_id, '
-            '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
-            '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
-            '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
-            ' FROM contract, option, stock, contract stock_contract'
-            ' WHERE option.id = contract.id'
-            '  AND stock.id = option.stock_id'
-            '  AND stock_contract.id = stock.id'
-            '  AND option.call_or_put = ? '
-            '  AND option.implied_volatility > stock.historical_volatility'
-            '  AND option.strike < stock_contract.price'
-            '  AND option.strike < ?'
-            '  AND option.delta >= ?'
-            '  AND contract.bid >= ?',
-            t)
-        opt = c.fetchall()
-        c.close()
-        print(len(opt), 'contracts')
-        # sort by annualized yield descending
-        for rec in sorted(opt, key=cmp_to_key(lambda item1, item2: item2[7] - item1[7])):
-            # verify that this symbol is in our wheel
-            nav_ratio = self.getWheelSymbolNavRatio(self.account, rec[1])
-            if nav_ratio:
-                engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
-                print('now:', engaged, round(engaged / portfolio_nav * 100, 1), '% engaged for stock', rec[1])
-                engaged += rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD')
-                print(engaged, round(engaged / portfolio_nav * 100, 1), '% engaged with this Put')
-                # verify that we don't already have naked put position
-                if engaged <= (portfolio_nav * nav_ratio):
-                    print(nav_ratio, engaged, portfolio_nav * nav_ratio, rec)
-                    contract = Contract()
-                    contract.secType = "OPT"
-#                        contract.currency = benchmarkCurrency
-                    contract.exchange = "SMART"
-                    contract.symbol = rec[1]
-                    contract.lastTradeDateOrContractMonth = rec[2].replace('-', '')
-                    contract.strike = rec[3]
-                    contract.right = rec[4]
-#                        contract.multiplier = "100"
-                    price = round((rec[8] + rec[9]) / 2, 2)
-                    print(price)
-                    self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(price))
-                    # stop after first submitted order
-                    break
+        if puttable_amount > 0:
+            # select option contracts which match:
+            #   implied volatility > historical volatility
+            #   Put
+            #   OTM
+            #   strike < how much we can engage
+            #   at least 80% success (delta >= -0.2)
+            #   premium at least $0.25
+            t = ('P', puttable_amount/100, -0.2, 0.25, )
+            self.getDbConnection()
+            c = self.db.cursor()
+            c.execute(
+                'SELECT contract.con_id, '
+                '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
+                '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
+                '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
+                ' FROM contract, option, stock, contract stock_contract'
+                ' WHERE option.id = contract.id'
+                '  AND stock.id = option.stock_id'
+                '  AND stock_contract.id = stock.id'
+                '  AND option.call_or_put = ? '
+                '  AND option.implied_volatility > stock.historical_volatility'
+                '  AND option.strike < stock_contract.price'
+                '  AND option.strike < ?'
+                '  AND option.delta >= ?'
+                '  AND contract.bid >= ?',
+                t)
+            opt = c.fetchall()
+            c.close()
+            print(len(opt), 'contracts')
+            # sort by annualized yield descending
+            for rec in sorted(opt, key=cmp_to_key(lambda item1, item2: item2[7] - item1[7])):
+                # verify that this symbol is in our wheel
+                nav_ratio = self.getWheelSymbolNavRatio(self.account, rec[1])
+                if nav_ratio:
+                    engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
+                    print('now:', engaged, round(engaged / portfolio_nav * 100, 1), '% engaged for stock', rec[1])
+                    engaged += rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD')
+                    print(engaged, round(engaged / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13])
+                    # verify that we don't already have naked put position
+                    if engaged <= (portfolio_nav * nav_ratio):
+                        print(nav_ratio, engaged, portfolio_nav * nav_ratio, rec)
+                        contract = Contract()
+                        contract.secType = "OPT"
+    #                        contract.currency = benchmarkCurrency
+                        contract.exchange = "SMART"
+                        contract.symbol = rec[1]
+                        contract.lastTradeDateOrContractMonth = rec[2].replace('-', '')
+                        contract.strike = rec[3]
+                        contract.right = rec[4]
+    #                        contract.multiplier = "100"
+                        price = round((rec[8] + rec[9]) / 2, 2)
+                        print(price)
+                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(price))
+                        # stop after first submitted order
+                        break
+                    else:
+                        print(rec[5], 'max engagement reached')
                 else:
-                    print(rec[5], 'max engagement reached')
-            else:
-                print(rec[5], 'stopped')
+                    print(rec[5], 'stopped')
 
     def sellCoveredCallsIfPossible(self,
             contract: Contract, position: float,
@@ -1685,6 +1594,121 @@ class Trader(wrapper.EWrapper, EClient):
                 print(opt)
                 c.close()
 
+    def selectNextSymbol(self):
+        print('selectNextSymbol.')
+        if len(self.wheelSymbolsToProcess) == 0:
+            self.wheelSymbolsToProcess = self.getWheelSymbolsToProcess()
+        self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop(0)
+        contract = Contract()
+        conId = self.getContractConId(self.wheelSymbolsProcessingSymbol)
+        if conId:
+            # try to go without conId. Won't work for reqSecDefOptParams, but reqContractDetails will get it!
+            contract.conId = conId
+        contract.symbol = self.wheelSymbolsProcessingSymbol
+        contract.secType = 'STK'
+        contract.exchange = 'SMART'
+        # print('requesting reqSecDefOptParams for', contract)
+        # self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
+        self.reqContractDetails(self.getNextTickerId(), contract)
+
+    def processNextOptionExpiration(self):
+        print('processNextOptionExpiration.')
+        # We are processing all strikes for each expiration for one stock
+        # self.wheelSymbolsProcessingSymbol: stock symbol being processed
+        # self.wheelSymbolsProcessingStrikes: strikes list associated to process
+        # self.wheelSymbolsProcessingExpirations: expirations list associated to process, one at a time
+        today = date.today()
+        exp = None
+        while len(self.wheelSymbolsExpirations) > 0:
+#                print('expirations:', self.wheelSymbolsExpirations)
+            exp = self.wheelSymbolsExpirations.pop(0)
+            expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
+#                print('expiration selected:', exp, expiration, 'left:', self.wheelSymbolsExpirations)
+            if (expiration - today).days < 65:
+                break
+            exp = None
+        if exp != None:
+            if not self.optionContractsAvailable:
+                # better to void data than using old values, on first scan
+                self.getDbConnection()
+                c = self.db.cursor()
+                c.execute(
+                    """
+                    UPDATE contract
+                    SET ask = NULL, price = NULL, bid = NULL, previous_close_price = NULL, updated = NULL
+                    WHERE contract.id IN (
+                        SELECT option.id
+                            FROM option, contract stock
+                            WHERE option.stock_id = stock.id
+                                AND stock.symbol = ?
+                                AND option.last_trade_date = ?
+                        )
+                    """,
+                    (self.wheelSymbolsProcessingSymbol, expiration, ))
+                c.close()
+                self.db.commit()
+            price = self.getSymbolPrice(self.wheelSymbolsProcessingSymbol)
+            num_requests = 0
+            # atm: first strike index above price
+            for atm in range(len(self.wheelSymbolsProcessingStrikes)):
+                if self.wheelSymbolsProcessingStrikes[atm] >= price:
+                    break
+#                print('atm:', atm)
+            contract = Contract()
+            contract.exchange = 'SMART'
+            contract.secType = 'OPT'
+            contract.lastTradeDateOrContractMonth = exp
+            contract.symbol = self.wheelSymbolsProcessingSymbol
+            # process at most xx strikes in each direction
+            steps = math.ceil(len(self.wheelSymbolsProcessingStrikes) / 100)
+#                print('steps:', steps)
+            # should be 24 but as reqContractDetails callback will submit new request we will 
+            # potentially overcome de 100 simultaneous requests limit
+            # I lower substencially as (maybe) TWS is running it's own querie that counts for the same limit
+            for i in range(0, 19):
+                if (atm-i-1) >= 0:
+                    # self.reqContractDetailsProcessingCount += 1
+                    contract.strike = self.wheelSymbolsProcessingStrikes[atm-i-1]
+                    contract.right = 'P'
+                    self.reqContractDetails(self.getNextTickerId(), contract)
+                    num_requests += 1
+
+                    # self.reqContractDetailsProcessingCount += 1
+                    contract.right = 'C'
+                    self.reqContractDetails(self.getNextTickerId(), contract)
+                    num_requests += 1
+
+                if (atm+i) < len(self.wheelSymbolsProcessingStrikes):
+                    # self.reqContractDetailsProcessingCount += 1
+                    contract.strike = self.wheelSymbolsProcessingStrikes[atm+i]
+                    contract.right = 'C'
+                    self.reqContractDetails(self.getNextTickerId(), contract)
+                    num_requests += 1
+
+                    # self.reqContractDetailsProcessingCount += 1
+                    contract.right = 'P'
+                    self.reqContractDetails(self.getNextTickerId(), contract)
+                    num_requests += 1
+                # and no more than 15% distance
+# to debug may be out of bounds                   if (self.wheelSymbolsProcessingStrikes[atm-i] < (price*0.85)) and (self.wheelSymbolsProcessingStrikes[atm+i] > (price*1.15)):
+#                        break
+            print(num_requests, 'reqContractDetails submitted for', self.wheelSymbolsProcessingSymbol, exp)
+        else:
+            print('done with symbol:', self.wheelSymbolsProcessingSymbol)
+            # we are finished with this symbol
+            self.wheelSymbolsProcessed.append(self.wheelSymbolsProcessingSymbol)
+            self.wheelSymbolsProcessingSymbol = None
+            self.wheelSymbolsProcessingStrikes = []
+            if (len(self.wheelSymbolsToProcess) > 0):
+                self.selectNextSymbol()
+            else:
+                print('findWheelSymbolsInfo. All done!')
+                # we are done for some
+                self.lastWheelProcess = time.time()
+                self.optionContractsAvailable = True
+                # Then start again
+                self.wheelSymbolsToProcess = self.wheelSymbolsProcessed
+
     """
     Main Program
     """
@@ -1700,7 +1724,7 @@ class Trader(wrapper.EWrapper, EClient):
     def nextValidId(self, orderId: int):
         super().nextValidId(orderId)
         self.nextValidOrderId = orderId
-        # print("NextValidId:", orderId)
+        print("NextValidId:", orderId)
         # we can start now
         self.start()
     # ! [nextvalidid]

@@ -41,7 +41,7 @@ def SetupLogger():
 def main():
     SetupLogger()
     logging.debug("now is %s", datetime.datetime.now())
-    logging.getLogger().setLevel(logging.ERROR)
+    logging.getLogger().setLevel(logging.ERROR) # INFO to get API traces
 
     cmdLineParser = argparse.ArgumentParser("api tests")
     # cmdLineParser.add_option("-c", action="store_True", dest="use_cache", default = False, help = "use the cache")
