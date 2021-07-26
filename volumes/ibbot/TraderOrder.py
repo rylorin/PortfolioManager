@@ -3,6 +3,7 @@ TBD
 """
 
 from ibapi.order import * # @UnusedWildImport
+from ibapi.tag_value import TagValue
 
 class TraderOrder:
 
@@ -59,4 +60,26 @@ class TraderOrder:
         order.orderType = "LMT"
         order.totalQuantity = quantity
         order.lmtPrice = priceCap
+        return order
+
+    """ <summary>
+    #/ Create combination orders that include options, stock and futures legs (stock legs can be included if the order is routed 
+    #/ through SmartRouting). Although a combination/spread order is constructed of separate legs, it is executed as a single transaction 
+    #/ if it is routed directly to an exchange. For combination orders that are SmartRouted, each leg may be executed separately to ensure 
+    #/ best execution.
+    #/ Products: OPT, STK, FUT
+    </summary>"""
+    @staticmethod
+    def ComboLimitOrder(action:str, quantity:float, limitPrice:float, 
+                        nonGuaranteed:bool):
+        # ! [combolimit]
+        order = TraderOrder.Order()
+        order.action = action
+        order.orderType = "LMT"
+        order.totalQuantity = quantity
+        order.lmtPrice = limitPrice
+        if nonGuaranteed:
+            order.smartComboRoutingParams = []
+            order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
+        # ! [combolimit]
         return order

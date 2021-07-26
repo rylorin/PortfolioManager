@@ -67,13 +67,9 @@ class Trader(wrapper.EWrapper, EClient):
         self.portfolioNAV = None
         self.portfolioLoaded = False
         self.ordersLoaded = False
-        self.optionContractsAvailable = False
-        self.optionContractsAvailable = True    # for testing
         self.lastCashAdjust = None
         self.lastNakedPutsSale = None
         self.nextTickerId = 1024
-        # self.reqContractDetailsProcessingCount = 0
-        # self.reqSecDefOptParamsCount = 0
 
         self.lastWheelProcess = 0
         self.wheelSymbolsToProcess = []
@@ -81,6 +77,8 @@ class Trader(wrapper.EWrapper, EClient):
         self.wheelSymbolsProcessingStrikes = None
         self.wheelSymbolsExpirations = None
         self.wheelSymbolsProcessed = []
+        self.optionContractsAvailable = False
+        # self.optionContractsAvailable = True    # for testing
     
     def getNextTickerId(self):
         self.nextTickerId += 1
@@ -1012,7 +1010,7 @@ class Trader(wrapper.EWrapper, EClient):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
         if exchange == "SMART":
-            print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
+            # print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
             self.getDbConnection()
             c = self.db.cursor()
             t = (underlyingConId, )
@@ -1518,13 +1516,40 @@ class Trader(wrapper.EWrapper, EClient):
                     self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellCoveredCall(price, math.floor(net_pos/100)))
         # print('sellCoveredCallsIfPossible done.')
 
+    @staticmethod
+    def OptionComboContract(underlying: str, buyleg: int, sellleg: int):
+        #! [bagoptcontract]
+        contract = Contract()
+        contract.symbol = underlying
+        contract.secType = "BAG"
+        contract.currency = "USD"
+        contract.exchange = "SMART"
+
+        leg1 = ComboLeg()
+        leg1.conId = buyleg
+        leg1.ratio = 1
+        leg1.action = "BUY"
+        leg1.exchange = "SMART"
+
+        leg2 = ComboLeg()
+        leg2.conId = sellleg
+        leg2.ratio = 1
+        leg2.action = "SELL"
+        leg2.exchange = "SMART"
+
+        contract.comboLegs = []
+        contract.comboLegs.append(leg1)
+        contract.comboLegs.append(leg2)
+        #! [bagoptcontract]
+        return contract
+
     def rollOptionIfNeeded(self,
             contract: Contract, position: float,
             marketPrice: float, marketValue: float,
             averageCost: float, unrealizedPNL: float,
             realizedPNL: float, accountName: str):
         # print("rollOptionIfNeeded.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:", contract.exchange, "Position:", position, "MarketPrice:", marketPrice, "MarketValue:", marketValue, "AverageCost:", averageCost, "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL, "AccountName:", accountName)
-        if (not self.ordersLoaded) or (not self.optionContractsAvailable) or (not contract.symbol in self.wheelSymbolsProcessed):
+        if (not self.ordersLoaded) or (not contract.symbol in self.wheelSymbolsProcessed):
             return
         print('rollOptionIfNeeded.', 'contract:', contract)
         position += self.getContractQuantityOnOrderBook(accountName, contract, 'BUY')
@@ -1536,63 +1561,87 @@ class Trader(wrapper.EWrapper, EClient):
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
-                #   strike >= underlying price
-                #   maturity = current maturity
+                #   strike >= underlying price, no could be difficult sometimes, only strike >= current strike for the moment (but we will keep highest strike)
+                #   maturity > current maturity
                 #   same underlying stock
                 #   bid >= current ask
-                t = (contract.conId, )
+                # the trade is going against us,
+                # we will try to exit as soon as possible: closest expiration
+                # and select the highest strike, most onservative approach
+                # simple rules, maybe could be improved by using delta and yield (same rules as position openning)?
                 self.getDbConnection()
                 c = self.db.cursor()
                 c.execute(
-                    'SELECT contract.con_id, '
-                    '  option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
-                    '  julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask)/ option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360, '
-                    '  contract.bid, contract.ask, option.delta '
-                    ' FROM contract, option, contract contract_ref, option option_ref'
-                    ' WHERE contract_ref.con_id = ?'
-                    '  AND contract_ref.id = option_ref.id'
-                    '  AND option_ref.stock_id = option.stock_id'
-                    '  AND contract.id = option.id'
-                    '  AND option.last_trade_date > option_ref.last_trade_date'
-                    '  AND contract_ref.ask <= contract.bid'
-                    '  AND option_ref.call_or_put = option.call_or_put'
-                    '  AND option.strike >= option_ref.strike'
-                    , t)
+                    """
+                    SELECT contract.con_id,
+                      option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
+                      julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask) / option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360,
+                      contract.bid, contract.ask, option.delta, contract_ref.bid, contract_ref.ask, contract_ref.price
+                     FROM contract, option, contract contract_ref, option option_ref
+                     WHERE contract_ref.con_id = ?
+                      AND contract_ref.id = option_ref.id
+                      AND option_ref.stock_id = option.stock_id
+                      AND contract.id = option.id
+                      AND option.last_trade_date > option_ref.last_trade_date
+                      AND contract_ref.ask <= contract.bid
+                      AND option_ref.call_or_put = option.call_or_put
+                      AND option.strike >= option_ref.strike
+                     ORDER BY option.last_trade_date ASC, option.strike DESC
+                    """
+                    , (contract.conId, ))
                 opt = c.fetchall()
-                print(len(opt), 'possible contracts')
-                print(opt)
                 c.close()
+                print(len(opt), 'possible contracts:', opt)
+                if (len(opt) >= 1):
+                    print(opt[0])
+                    self.placeOrder(self.nextOrderId(),
+                        self.OptionComboContract(contract.symbol, contract.conId, opt[0][0]),
+                        TraderOrder.ComboLimitOrder("BUY", -position, 0, False))
+                if (len(opt) >= 2):
+                    print(opt[1])
+                if (len(opt) >= 3):
+                    print(opt[2])
             elif (contract.right == 'P' and underlying_price < contract.strike):
                 print('need to roll ITM Put', contract)
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
                 #   strike <= underlying price
-                #   maturity = current maturity
+                #   maturity > current maturity
                 #   same underlying stock
                 #   bid >= current ask
-                t = (contract.conId, )
                 self.getDbConnection()
                 c = self.db.cursor()
                 c.execute(
-                    'SELECT contract.con_id, '
-                    '  option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
-                    '  julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask)/ option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360, '
-                    '  contract.bid, contract.ask, option.delta '
-                    ' FROM contract, option, contract contract_ref, option option_ref'
-                    ' WHERE contract_ref.con_id = ?'
-                    '  AND contract_ref.id = option_ref.id'
-                    '  AND option_ref.stock_id = option.stock_id'
-                    '  AND contract.id = option.id'
-                    '  AND option.last_trade_date > option_ref.last_trade_date'
-                    '  AND contract_ref.ask <= contract.bid'
-                    '  AND option_ref.call_or_put = option.call_or_put'
-                    '  AND option.strike <= option_ref.strike'
-                    , t)
+                    """
+                    SELECT contract.con_id,
+                      option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
+                      julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask) / option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360,
+                      contract.bid, contract.ask, option.delta, contract_ref.bid, contract_ref.ask, contract_ref.price
+                     FROM contract, option, contract contract_ref, option option_ref
+                     WHERE contract_ref.con_id = ?
+                      AND contract_ref.id = option_ref.id
+                      AND option_ref.stock_id = option.stock_id
+                      AND contract.id = option.id
+                      AND option.last_trade_date > option_ref.last_trade_date
+                      AND contract_ref.ask <= contract.bid
+                      AND option_ref.call_or_put = option.call_or_put
+                      AND option.strike <= option_ref.strike
+                     ORDER BY option.last_trade_date ASC, option.strike ASC
+                    """
+                    , (contract.conId, ))
                 opt = c.fetchall()
-                print(len(opt), 'possible contracts')
-                print(opt)
                 c.close()
+                print(len(opt), 'possible contracts:', opt)
+                if (len(opt) >= 1):
+                    print(opt[0])
+                    self.placeOrder(self.nextOrderId(),
+                        self.OptionComboContract(contract.symbol, contract.conId, opt[0][0]),
+                        TraderOrder.ComboLimitOrder("BUY", -position, 0, False))
+                if (len(opt) >= 2):
+                    print(opt[1])
+                if (len(opt) >= 3):
+                    print(opt[2])
 
     def selectNextSymbol(self):
         print('selectNextSymbol.')
@@ -1707,7 +1756,7 @@ class Trader(wrapper.EWrapper, EClient):
                 self.lastWheelProcess = time.time()
                 self.optionContractsAvailable = True
                 # Then start again
-                self.wheelSymbolsToProcess = self.wheelSymbolsProcessed
+                # self.wheelSymbolsToProcess = self.wheelSymbolsProcessed
 
     """
     Main Program
