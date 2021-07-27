@@ -745,15 +745,44 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND position.contract_id = option.id ' \
             ' AND option.call_or_put = ? ' \
             ' AND option.stock_id = stock.id ' \
-            ' AND stock.price < option.strike ' \
             ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency',
-            t)
+            ' AND currency.base = portfolio.base_currency' \
+            ' AND stock.price < option.strike '
+            , t)
         r = c.fetchone()
-        naked_puts_amount = float(r[0])
+        getItmNakedPutAmount = float(r[0])
         c.close()
-        print('ITM naked put:', naked_puts_amount)
-        return naked_puts_amount
+        print('getItmNakedPutAmount:', getItmNakedPutAmount)
+        return getItmNakedPutAmount
+
+    # Very similar to the previous one.
+    # only 'P' => 'C'
+    # stock.price < option.strike => >
+    # and negated the result
+    def getItmShortCallsAmount(self, account: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        # how much do we need to cover ITM short puts?
+        t = (account, 'OPT', 'C', )
+        c.execute(
+            'SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) ' \
+            'FROM position, portfolio, contract, option, currency, contract stock ' \
+            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND position.quantity < 0 ' \
+            ' AND position.contract_id = contract.id ' \
+            ' AND contract.secType = ? ' \
+            ' AND position.contract_id = option.id ' \
+            ' AND option.call_or_put = ? ' \
+            ' AND option.stock_id = stock.id ' \
+            ' AND contract.currency = currency.currency ' \
+            ' AND currency.base = portfolio.base_currency' \
+            ' AND stock.price > option.strike '
+            , t)
+        r = c.fetchone()
+        getItmShortCallsAmount = -float(r[0])
+        c.close()
+        print('getItmShortCallsAmount:', getItmShortCallsAmount)
+        return getItmShortCallsAmount
 
     """
     order book operations
@@ -1313,10 +1342,10 @@ class Trader(wrapper.EWrapper, EClient):
         total_cash = self.getTotalCashAmount(self.account)
 
         # how much do we need to cover ALL short puts?
-        naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
+        # naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
 
-        # how much do we need to cover ITM short puts?
-        naked_puts_amount = self.getItmNakedPutAmount(self.account,)
+        # how much do we need to cover ITM short?
+        naked_puts_amount = self.getItmNakedPutAmount(self.account) + self.getItmShortCallsAmount(self.account)
 
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
