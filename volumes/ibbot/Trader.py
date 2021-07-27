@@ -2,6 +2,7 @@
 TBD
 """
 
+from os import X_OK
 from ibapi.scanner import NO_ROW_NUMBER_SPECIFIED
 import time
 from datetime import date
@@ -69,9 +70,11 @@ class Trader(wrapper.EWrapper, EClient):
         self.ordersLoaded = False
         self.lastCashAdjust = None
         self.lastNakedPutsSale = None
+        self.lastRollOptionTime = None
         self.nextTickerId = 1024
 
         self.lastWheelProcess = 0
+        self.lastWheelRequestTime = None
         self.wheelSymbolsToProcess = []
         self.wheelSymbolsProcessingSymbol = None
         self.wheelSymbolsProcessingStrikes = None
@@ -155,21 +158,36 @@ class Trader(wrapper.EWrapper, EClient):
     def normalizeSymbol(symbol):
         return symbol.rstrip('d').replace(' ', '-').replace('.T', '')
 
+    def countApiRequestsInProgress(self):
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
+        r = c.fetchone()
+        count = int(r[0])
+        c.close()
+        return count
+
     def clearRequestId(self, reqId: int):
         #print('clearRequestId(', reqId, '):', end=' ')
         self.getDbConnection()
         c = self.db.cursor()
-        t = (reqId, )
-        c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id = ?', t)
-        if c.rowcount == 1:
-            c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
-            r = c.fetchone()
-            count = int(r[0])
-        else:
-            count = -1
+        c.execute('UPDATE contract SET api_req_id = NULL WHERE api_req_id = ?', (reqId, ))
+        rowcount= c.rowcount
         c.close()
         self.db.commit()
+        if rowcount == 1:
+            count = self.countApiRequestsInProgress()
+        else:
+            count = -1
         #print(count)
+        return count
+
+    def clearRequestIdAndContinue(self, reqId: int):
+        count = self.clearRequestId(reqId)
+        # print('clearRequestIdAndContinue(', reqId, '):', count)
+        if (count == 0):
+            # continue data fetching if no more request running
+            self.processNextOptionExpiration()
         return count
 
     def getBenchmark(self, accountName: str):
@@ -263,7 +281,7 @@ class Trader(wrapper.EWrapper, EClient):
             ' WHERE portfolio.account = ?'
             , t)
         r = c.fetchone()
-        getNakedPutSleep = int(r[0])
+        getNakedPutSleep = int(r[0]) * 60
         c.close()
         self.db.commit()
 #        print('getNakedPutSleep:', getNakedPutSleep)
@@ -279,7 +297,7 @@ class Trader(wrapper.EWrapper, EClient):
             ' WHERE portfolio.account = ?'
             , t)
         r = c.fetchone()
-        getFindSymbolsSleep = int(r[0])
+        getFindSymbolsSleep = int(r[0]) * 60
         c.close()
         self.db.commit()
 #        print('getFindSymbolsSleep:', getFindSymbolsSleep)
@@ -295,11 +313,30 @@ class Trader(wrapper.EWrapper, EClient):
             ' WHERE portfolio.account = ?'
             , t)
         r = c.fetchone()
-        getAdjustCashSleep = int(r[0])
+        getAdjustCashSleep = int(r[0]) * 60
         c.close()
         self.db.commit()
 #        print('getAdjustCashSleep:', getAdjustCashSleep)
         return getAdjustCashSleep
+
+    def getRollOptionsSleep(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.roll_Options_Sleep'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        if r[0]:
+            getRollOptionsSleep = int(r[0]) * 60
+        else:
+            getRollOptionsSleep = 0
+        c.close()
+        self.db.commit()
+#        print('getRollOptionsSleep:', getRollOptionsSleep)
+        return getRollOptionsSleep
 
     #
     # Other
@@ -919,20 +956,11 @@ class Trader(wrapper.EWrapper, EClient):
         print('getOptionsAmountOnOrderBook(', account, stock, putOrCall, action, ') =>', getOptionsAmountOnOrderBook)
         return getOptionsAmountOnOrderBook
 
-    def clearRequestIdAndContinue(self, reqId: int):
-        count = self.clearRequestId(reqId)
-        # print('clearRequestIdAndContinue(', reqId, '):', count)
-        if (count == 0):
-            # continue data fetching if no more request running
-            self.processNextOptionExpiration()
-        return count
-
     """
     IB API wrappers
     """
 
     @iswrapper
-    # ! [error]
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
         # super().error(reqId, errorCode, errorString)
         if errorCode == 162:
@@ -953,18 +981,19 @@ class Trader(wrapper.EWrapper, EClient):
             # Part of requested market data is not subscribed. Subscription-independent ticks are still active.Delayed market data is not available
 #            super().error(reqId, errorCode, errorString)
             pass
+        # elif errorCode == 1102:
+        #     # onnectivity between IB and Trader Workstation has been restored - data maintained.
+        #     super().error(reqId, errorCode, errorString)
+        #     if (self.wheelSymbolsProcessingSymbol) \
+        #         and (not self.countApiRequestsInProgress()):
+        #             # assume that we lost current requests in progress
+        #             # should restart current expiration but no function for this now
+        #             # therefore advance to next expiration
+        #             self.processNextOptionExpiration()
         else:
             super().error(reqId, errorCode, errorString)
-            self.clearRequestId(reqId)
-            self.getDbConnection()
-            c = self.db.cursor()
-            c.execute('SELECT COUNT(*) FROM contract WHERE api_req_id NOTNULL',)
-            r = c.fetchone()
-            count = int(r[0])
-            c.close()
+            count = self.countApiRequestsInProgress()
             print(count, 'pending requests')
-            # if count == 0:
-            #     self.processNextOptionExpiration()
 
     @iswrapper
     # ! [tickprice]
@@ -1208,6 +1237,8 @@ class Trader(wrapper.EWrapper, EClient):
 
             self.lastCashAdjust = 0
             self.lastNakedPutsSale = 0
+            self.lastRollOptionTime = dict()
+            self.lastWheelRequestTime = None
 
             self.clearAllApiReqId()
             self.clearPortfolioBalances(self.account)
@@ -1237,12 +1268,17 @@ class Trader(wrapper.EWrapper, EClient):
         # print("UpdateAccountTime. Time:", timeStamp)
         if self.started:
             # perform regular tasks
-            # self.findWheelSymbolsInfo()
             self.sellNakedPuts()
             self.adjustCash()
-            if (time.time() > (self.lastWheelProcess + self.getFindSymbolsSleep(self.account))) \
+            if self.wheelSymbolsProcessingSymbol \
+                and (time.time() > (self.lastWheelRequestTime + 30)):
+                    # symbol in process and no activity for more than 30 secs, we are stuck
+                    # should restart with last expiration
+                    self.processNextOptionExpiration()
+            elif (time.time() > (self.lastWheelProcess + self.getFindSymbolsSleep(self.account))) \
                 and (self.wheelSymbolsProcessingSymbol == None) \
                 and (len(self.wheelSymbolsToProcess) == 0):
+                    # no process in progress, start over
                     self.selectNextSymbol()
                 
     # ! [updateaccounttime]
@@ -1331,7 +1367,7 @@ class Trader(wrapper.EWrapper, EClient):
             return
         sleep = self.getAdjustCashSleep(self.account)
         seconds = time.time()
-        if (seconds < (self.lastCashAdjust + (sleep * 60))):
+        if (seconds < (self.lastCashAdjust + sleep)):
             return
         self.lastCashAdjust = seconds
 
@@ -1398,7 +1434,7 @@ class Trader(wrapper.EWrapper, EClient):
             return
         sleep = self.getNakedPutSleep(self.account)
         seconds = time.time()
-        if (seconds < (self.lastNakedPutsSale + (sleep * 60))):
+        if (seconds < (self.lastNakedPutsSale + sleep)):
             return
         self.lastNakedPutsSale = seconds
 
@@ -1578,9 +1614,20 @@ class Trader(wrapper.EWrapper, EClient):
             averageCost: float, unrealizedPNL: float,
             realizedPNL: float, accountName: str):
         # print("rollOptionIfNeeded.", "Symbol:", contract.symbol, "SecType:", contract.secType, "Exchange:", contract.exchange, "Position:", position, "MarketPrice:", marketPrice, "MarketValue:", marketValue, "AverageCost:", averageCost, "UnrealizedPNL:", unrealizedPNL, "RealizedPNL:", realizedPNL, "AccountName:", accountName)
-        if (not self.ordersLoaded) or (not contract.symbol in self.wheelSymbolsProcessed):
+        if contract.conId not in self.lastRollOptionTime:
+            self.lastRollOptionTime[contract.conId] = 0
+        seconds = time.time()
+        expiration = datetime.datetime.strptime(contract.lastTradeDateOrContractMonth, '%Y%m%d').timestamp()
+        # now = datetime.datetime.now().timestamp()
+        hours = (expiration - seconds) / 3600
+        # print(expiration, now, hours)
+        if (not self.ordersLoaded) \
+            or (not contract.symbol in self.wheelSymbolsProcessed) \
+            or (not position) or (hours > 12) \
+            or (seconds < (self.lastRollOptionTime[contract.conId] + self.getRollOptionsSleep(accountName))):
             return
         print('rollOptionIfNeeded.', 'contract:', contract)
+        self.lastRollOptionTime[contract.conId] = seconds
         position += self.getContractQuantityOnOrderBook(accountName, contract, 'BUY')
         print('net position:', position)
         if (position < 0):
@@ -1624,8 +1671,8 @@ class Trader(wrapper.EWrapper, EClient):
                 if (len(opt) >= 1):
                     print(opt[0])
                     self.placeOrder(self.nextOrderId(),
-                        self.OptionComboContract(contract.symbol, contract.conId, opt[0][0]),
-                        TraderOrder.ComboLimitOrder("BUY", -position, 0, False))
+                        self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
+                        TraderOrder.ComboLimitOrder("SELL", -position, 0, False))
                 if (len(opt) >= 2):
                     print(opt[1])
                 if (len(opt) >= 3):
@@ -1665,8 +1712,8 @@ class Trader(wrapper.EWrapper, EClient):
                 if (len(opt) >= 1):
                     print(opt[0])
                     self.placeOrder(self.nextOrderId(),
-                        self.OptionComboContract(contract.symbol, contract.conId, opt[0][0]),
-                        TraderOrder.ComboLimitOrder("BUY", -position, 0, False))
+                        self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
+                        TraderOrder.ComboLimitOrder("SELL", -position, 0, False))
                 if (len(opt) >= 2):
                     print(opt[1])
                 if (len(opt) >= 3):
@@ -1674,6 +1721,7 @@ class Trader(wrapper.EWrapper, EClient):
 
     def selectNextSymbol(self):
         print('selectNextSymbol.')
+        self.lastWheelRequestTime = time.time()
         if len(self.wheelSymbolsToProcess) == 0:
             self.wheelSymbolsToProcess = self.getWheelSymbolsToProcess()
         self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop(0)
@@ -1691,6 +1739,7 @@ class Trader(wrapper.EWrapper, EClient):
 
     def processNextOptionExpiration(self):
         print('processNextOptionExpiration.')
+        self.lastWheelRequestTime = time.time()
         # We are processing all strikes for each expiration for one stock
         # self.wheelSymbolsProcessingSymbol: stock symbol being processed
         # self.wheelSymbolsProcessingStrikes: strikes list associated to process
@@ -1738,7 +1787,7 @@ class Trader(wrapper.EWrapper, EClient):
             contract.lastTradeDateOrContractMonth = exp
             contract.symbol = self.wheelSymbolsProcessingSymbol
             # process at most xx strikes in each direction
-            steps = math.ceil(len(self.wheelSymbolsProcessingStrikes) / 100)
+            # steps = math.ceil(len(self.wheelSymbolsProcessingStrikes) / 100)
 #                print('steps:', steps)
             # should be 24 but as reqContractDetails callback will submit new request we will 
             # potentially overcome de 100 simultaneous requests limit
@@ -1780,7 +1829,7 @@ class Trader(wrapper.EWrapper, EClient):
             if (len(self.wheelSymbolsToProcess) > 0):
                 self.selectNextSymbol()
             else:
-                print('findWheelSymbolsInfo. All done!')
+                print('processNextOptionExpiration. All done!')
                 # we are done for some
                 self.lastWheelProcess = time.time()
                 self.optionContractsAvailable = True
