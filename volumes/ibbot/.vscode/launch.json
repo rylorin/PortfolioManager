@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "Program.py",
             "console": "integratedTerminal",
-            "args": ["--cache"],
+            "args": [ "--cache" ],
             "cwd": "${workspaceFolder}"
         }
     ]
