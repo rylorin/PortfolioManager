@@ -43,8 +43,8 @@ def main():
     logging.debug("now is %s", datetime.datetime.now())
     logging.getLogger().setLevel(logging.ERROR) # INFO to get API traces
 
-    cmdLineParser = argparse.ArgumentParser("api tests")
-    # cmdLineParser.add_option("-c", action="store_True", dest="use_cache", default = False, help = "use the cache")
+    cmdLineParser = argparse.ArgumentParser("Options trading bot")
+    cmdLineParser.add_argument("--cache", action='store_true', dest="use_cache", help = "use the cache")
     # cmdLineParser.add_option("-f", action="store", type="string", dest="file", default="", help="the input file")
     cmdLineParser.add_argument("-p", "--port", action="store", type=int,
                                dest="port", default=7497, help="The TCP port to use")
@@ -57,13 +57,13 @@ def main():
 
     try:
         app = Trader()
+        print(args.use_cache)
+        app.setUseCache(args.use_cache)
         # ! [connect]
-        # RYL
         app.connect(args.host, args.port, clientId=0)
         # ! [connect]
         print("serverVersion:%s connectionTime:%s" % (app.serverVersion(),
                                                       app.twsConnectionTime()))
-
         # ! [clientrun]
         app.run()
         # ! [clientrun]

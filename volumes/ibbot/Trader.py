@@ -73,6 +73,7 @@ class Trader(wrapper.EWrapper, EClient):
         self.lastRollOptionTime = None
         self.nextTickerId = 1024
 
+        self.useCache = False
         self.lastWheelProcess = 0
         self.lastWheelRequestTime = None
         self.wheelSymbolsToProcess = []
@@ -82,8 +83,11 @@ class Trader(wrapper.EWrapper, EClient):
         self.wheelSymbolsExpirations = None
         self.wheelSymbolsProcessed = []
         self.optionContractsAvailable = False
-        self.optionContractsAvailable = True    # for testing
     
+    def setUseCache(self, useit: bool):
+        self.useCache = useit
+        self.optionContractsAvailable = useit
+
     def getNextTickerId(self):
         self.nextTickerId += 1
         return self.nextTickerId
@@ -699,7 +703,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         getBaseToCurrencyRatio = float(r[0])
         c.close()
-        print('getBaseToCurrencyRatio:', getBaseToCurrencyRatio)
+        # print('getBaseToCurrencyRatio:', getBaseToCurrencyRatio)
         return getBaseToCurrencyRatio
 
     """
@@ -1220,7 +1224,8 @@ class Trader(wrapper.EWrapper, EClient):
         if c.rowcount != 1:
             print('failed to store volatility')
         else:
-            print(c.rowcount, 'record(s) updated with historical volatility')
+            # print(c.rowcount, 'record(s) updated with historical volatility')
+            pass
         c.close()
         self.db.commit()
     # ! [historicaldata]
@@ -1542,9 +1547,9 @@ class Trader(wrapper.EWrapper, EClient):
                 nav_ratio = self.getWheelSymbolNavRatio(self.account, rec[1])
                 if nav_ratio:
                     engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
-                    print('now:', engaged, round(engaged / portfolio_nav * 100, 1), '% engaged for stock', rec[1])
+                    print(rec[1], engaged, round(engaged / portfolio_nav * 100, 1), '% engaged for stock')
                     engaged += rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD')
-                    print(engaged, round(engaged / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13],'and expected yield of', rec[8])
+                    print(rec[5], engaged, round(engaged / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13],'and expected yield of', rec[7], rec)
                     # verify that we don't already have naked put position
                     if engaged <= (portfolio_nav * nav_ratio):
                         print('Placing order for', rec)
@@ -1558,7 +1563,7 @@ class Trader(wrapper.EWrapper, EClient):
                         contract.right = rec[4]
     #                        contract.multiplier = "100"
                         price = round((rec[8] + rec[9]) / 2, 2)
-                        print(rec[8], rec[9], price)
+                        # print(rec[8], rec[9], price)
                         self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(price))
                         # stop after first submitted order
                         break
@@ -1770,7 +1775,8 @@ class Trader(wrapper.EWrapper, EClient):
         self.lastWheelRequestTime = time.time()
         if len(self.wheelSymbolsToProcess) == 0:
             self.wheelSymbolsToProcess = self.getWheelSymbolsToProcess()
-            self.wheelSymbolsProcessed = self.getWheelSymbolsToProcess() # only for testing
+            if self.useCache:
+                self.wheelSymbolsProcessed = self.getWheelSymbolsToProcess()
         self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop(0)
         contract = Contract()
         conId = self.getContractConId(self.wheelSymbolsProcessingSymbol)

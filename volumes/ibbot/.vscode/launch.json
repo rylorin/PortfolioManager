@@ -9,7 +9,9 @@
             "type": "python",
             "request": "launch",
             "program": "Program.py",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "args": ["--cache"],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
