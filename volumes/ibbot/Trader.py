@@ -1046,19 +1046,10 @@ class Trader(wrapper.EWrapper, EClient):
             # Part of requested market data is not subscribed. Subscription-independent ticks are still active.Delayed market data is not available
 #            super().error(reqId, errorCode, errorString)
             pass
-        # elif errorCode == 1102:
-        #     # onnectivity between IB and Trader Workstation has been restored - data maintained.
-        #     super().error(reqId, errorCode, errorString)
-        #     if (self.wheelSymbolsProcessingSymbol) \
-        #         and (not self.countApiRequestsInProgress()):
-        #             # assume that we lost current requests in progress
-        #             # should restart current expiration but no function for this now
-        #             # therefore advance to next expiration
-        #             self.processNextOptionExpiration()
         else:
             super().error(reqId, errorCode, errorString)
             count = self.countApiRequestsInProgress()
-            print(count, 'pending requests')
+            # print(count, 'pending requests')
 
     @iswrapper
     # reqMktData callback
@@ -1262,7 +1253,6 @@ class Trader(wrapper.EWrapper, EClient):
             self.reqHistoricalData(nextReqId, contractDetails.contract, queryTime,
                 "2 D", "1 day", "HISTORICAL_VOLATILITY", 0, 1, False, [])
             print('requesting reqSecDefOptParams for', contractDetails.contract)
-
             self.reqSecDefOptParams(self.getNextTickerId(), contractDetails.contract.symbol, "", contractDetails.contract.secType, contractDetails.contract.conId)
         elif contractDetails.contract.secType == 'OPT':
             self.getDbConnection()
@@ -1723,9 +1713,12 @@ class Trader(wrapper.EWrapper, EClient):
                     , (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
-                print(len(opt), 'possible contracts, by delta:', sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9])))
+                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9]))
+                print(len(opt), 'possible contracts, by delta:')
+                for c in opt:
+                    print(c)
                 if (len(opt) >= 1):
-                    print(opt[0])
+                    print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
                         TraderOrder.ComboLimitOrder("SELL", -position, 0, False))
@@ -1737,7 +1730,7 @@ class Trader(wrapper.EWrapper, EClient):
                 #   strike <= underlying price
                 #   maturity > current maturity
                 #   same underlying stock
-                #   bid >= current ask
+                #   bid > current ask, > and not >= to handle the 0 ask/bid case (???)
                 self.getDbConnection()
                 c = self.db.cursor()
                 c.execute(
@@ -1752,9 +1745,10 @@ class Trader(wrapper.EWrapper, EClient):
                       AND option_ref.stock_id = option.stock_id
                       AND contract.id = option.id
                       AND option.last_trade_date > option_ref.last_trade_date
-                      AND contract_ref.ask <= contract.bid
+                      AND contract_ref.ask < contract.bid
                       AND option_ref.call_or_put = option.call_or_put
                       AND option.strike <= option_ref.strike
+                      AND option.delta NOTNULL
                      ORDER BY option.last_trade_date ASC, option.strike ASC
                     """
                     , (contract.conId, ))
@@ -1791,6 +1785,8 @@ class Trader(wrapper.EWrapper, EClient):
         self.reqContractDetails(self.getNextTickerId(), contract)
 
     def processCurrentOptionExpiration(self):
+        # print('processCurrentOptionExpiration.')
+        self.lastWheelRequestTime = time.time()
         exp = self.wheelSymbolsProcessingExpiration
         expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
         if not self.optionContractsAvailable:
