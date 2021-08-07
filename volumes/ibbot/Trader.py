@@ -571,7 +571,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' WHERE contract.symbol = ?',
             t)
         r = c.fetchone()
-        getSymbolPrice = float(r[0])
+        if r[0]:
+            getSymbolPrice = float(r[0])
+        else:
+            getSymbolPrice = None
         c.close()
 #        print('getSymbolPrice:', getSymbolPrice)
         return getSymbolPrice
@@ -1056,25 +1059,24 @@ class Trader(wrapper.EWrapper, EClient):
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
 #        print("TickPrice. TickerId:", reqId, "tickType:", tickType, "Price:", price, "CanAutoExecute:", attrib.canAutoExecute, "PastLimit:", attrib.pastLimit, "PreOpen:", attrib.preOpen)
         super().tickPrice(reqId, tickType, price, attrib)
-        if price < 0:
-            price = None
-        self.getDbConnection()
-        c = self.db.cursor()
-        t = (price, reqId, )
-        if tickType == TickTypeEnum.LAST:   # 4
-            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.BID:  # 1
-            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.ASK:  # 2
-            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.CLOSE:    # 9
-            c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
-        elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
-            pass
-        else:
-            print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
-        c.close()
-        self.db.commit()
+        if price >= 0:
+            self.getDbConnection()
+            c = self.db.cursor()
+            t = (price, reqId, )
+            if tickType == TickTypeEnum.LAST:   # 4
+                c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.BID:  # 1
+                c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.ASK:  # 2
+                c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.CLOSE:    # 9
+                c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
+            elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
+                pass
+            else:
+                print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
+            c.close()
+            self.db.commit()
     # ! [tickprice]
 
     @iswrapper
@@ -1125,20 +1127,20 @@ class Trader(wrapper.EWrapper, EClient):
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
         if exchange == "SMART":
             # print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
-            self.getDbConnection()
-            c = self.db.cursor()
-            t = (underlyingConId, )
-            c.execute(
-                'UPDATE contract'
-                '    SET ask = NULL, bid = NULL'
-                '    WHERE contract.id IN ('
-                '        SELECT option.id'
-                '            FROM option, contract stock_contract'
-                '            WHERE option.stock_id = stock_contract.id'
-                '                AND stock_contract.con_id = ?)'
-                , t)
-            c.close()
-            self.db.commit()
+            # self.getDbConnection()
+            # c = self.db.cursor()
+            # t = (underlyingConId, )
+            # c.execute(
+            #     'UPDATE contract'
+            #     '    SET ask = NULL, bid = NULL'
+            #     '    WHERE contract.id IN ('
+            #     '        SELECT option.id'
+            #     '            FROM option, contract stock_contract'
+            #     '            WHERE option.stock_id = stock_contract.id'
+            #     '                AND stock_contract.con_id = ?)'
+            #     , t)
+            # c.close()
+            # self.db.commit()
             self.wheelSymbolsExpirations = sorted(expirations)
             self.wheelSymbolsProcessingStrikes = sorted(strikes)
             self.wheelSymbolsProcessingSymbol = tradingClass
@@ -1313,20 +1315,23 @@ class Trader(wrapper.EWrapper, EClient):
         super().updateAccountTime(timeStamp)
         # print("UpdateAccountTime. Time:", timeStamp)
         if self.started:
-            # perform regular tasks
-            self.sellNakedPuts()
-            self.adjustCash()
             if self.wheelSymbolsProcessingSymbol \
                 and (time.time() > (self.lastWheelRequestTime + 30)):
-                    # symbol in process and no activity for more than 30 secs, we are stuck, so restart with last expiration
                     self.clearAllApiReqId()
-                    self.processCurrentOptionExpiration()
+                    if len(self.wheelSymbolsProcessingStrikes) > 0:
+                        # symbol in process and no activity for more than 30 secs, we are stuck, so restart with last expiration
+                        self.processCurrentOptionExpiration()
+                    else:
+                        # This should not happen, but once we got wheelSymbolsProcessingStrikes clear, don't know how
+                        self.selectNextSymbol()
             elif (time.time() > (self.lastWheelProcess + self.getFindSymbolsSleep(self.account))) \
                 and (self.wheelSymbolsProcessingSymbol == None) \
                 and (len(self.wheelSymbolsToProcess) == 0):
                     # no process in progress, start over
                     self.selectNextSymbol()
-                
+            # perform regular tasks
+            self.sellNakedPuts()
+            self.adjustCash()
     # ! [updateaccounttime]
 
     @iswrapper
@@ -1718,12 +1723,15 @@ class Trader(wrapper.EWrapper, EClient):
                 for c in opt:
                     print(c)
                 if (len(opt) >= 1):
-                    print(opt[0], (opt[0][7] + opt[0][11]) / 2)
+                    min_price = opt[0][7] - opt[0][11]
+                    max_price = opt[0][8] - opt[0][10]
+                    price = (min_price + max_price) / 2
+                    # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
-                        TraderOrder.ComboLimitOrder("SELL", -position, 0, False))
+                        TraderOrder.ComboLimitOrder("SELL", -position, price, False))
             elif (contract.right == 'P' and underlying_price < contract.strike):
-                print('need to roll ITM Put', contract)
+                print('Need to roll ITM Put', contract)
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
@@ -1754,15 +1762,18 @@ class Trader(wrapper.EWrapper, EClient):
                     , (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
-                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9]))
+                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
                 print(len(opt), 'possible contracts, by delta:')
                 for c in opt:
                     print(c)
                 if (len(opt) >= 1):
-                    print(opt[0], (opt[0][7] + opt[0][11]) / 2)
+                    min_price = opt[0][7] - opt[0][11]
+                    max_price = opt[0][8] - opt[0][10]
+                    price = (min_price + max_price) / 2
+                    # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
-                        TraderOrder.ComboLimitOrder("SELL", -position, 0, False))
+                        TraderOrder.ComboLimitOrder("SELL", -position, price, False))
 
     def selectNextSymbol(self):
         # print('selectNextSymbol.')
@@ -1790,7 +1801,7 @@ class Trader(wrapper.EWrapper, EClient):
         exp = self.wheelSymbolsProcessingExpiration
         expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
         if not self.optionContractsAvailable:
-            # better to void data than using old values, on first scan
+            # better to void data than using old values, on first scan as they can be quite old
             self.getDbConnection()
             c = self.db.cursor()
             c.execute(
@@ -1824,7 +1835,7 @@ class Trader(wrapper.EWrapper, EClient):
         # should be 24 but as reqContractDetails callback will submit new request we will 
         # potentially overcome de 100 simultaneous requests limit
         # I lower substencially as (maybe) TWS is running it's own querie that counts for the same limit
-        for i in range(19):
+        for i in range(20):
             if (atm-i-1) >= 0:
                 # self.reqContractDetailsProcessingCount += 1
                 contract.strike = self.wheelSymbolsProcessingStrikes[atm-i-1]
