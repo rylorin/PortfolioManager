@@ -1718,7 +1718,7 @@ class Trader(wrapper.EWrapper, EClient):
                     , (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
-                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9]))
+                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
                 print(len(opt), 'possible contracts, by delta:')
                 for c in opt:
                     print(c)
