@@ -787,7 +787,7 @@ class Trader(wrapper.EWrapper, EClient):
         else:
             getPortfolioOptionsValue = 0
         c.close()
-        print('getPortfolioOptionsValue(', account, stock, ') =>', getPortfolioOptionsValue)
+        # print('getPortfolioOptionsValue(', account, stock, ') =>', getPortfolioOptionsValue)
         return getPortfolioOptionsValue
 
     # returned value is <= 0 in base currency
