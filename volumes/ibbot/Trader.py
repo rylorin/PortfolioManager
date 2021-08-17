@@ -190,7 +190,7 @@ class Trader(wrapper.EWrapper, EClient):
     def clearRequestIdAndContinue(self, reqId: int):
         count = self.clearRequestId(reqId)
         # print('clearRequestIdAndContinue(', reqId, '):', count)
-        if (count == 0):
+        if (count == 0) and self.wheelSymbolsExpirations:
             # continue data fetching if no more request running
             self.processNextOptionExpiration()
         return count
@@ -213,7 +213,7 @@ class Trader(wrapper.EWrapper, EClient):
         getBenchmark.symbol = r[3]
         c.close()
         self.db.commit()
-        print('getBenchmark:', getBenchmark)
+        # print('getBenchmark:', getBenchmark)
         return getBenchmark
 
 #
@@ -592,7 +592,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         getSymbolCurrency = r[0]
         c.close()
-        print('getSymbolCurrency:', getSymbolCurrency)
+        # print('getSymbolCurrency:', getSymbolCurrency)
         return getSymbolCurrency
 
     def getSymbolPriceInBase(self, account: str, symbol: str):
@@ -615,7 +615,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         benchmarkPrice = float(r[0])
         c.close()
-        print('getSymbolPriceInBase:', benchmarkPrice)
+        # print('getSymbolPriceInBase:', benchmarkPrice)
         return benchmarkPrice
     
     def getUnderlyingPrice(self, contract: Contract):
@@ -671,7 +671,7 @@ class Trader(wrapper.EWrapper, EClient):
             t)
         r = c.fetchone()
         total_cash = float(r[0])
-        print('total cash:', total_cash)
+        # print('total cash:', total_cash)
         c.close()
         return total_cash
 
@@ -832,7 +832,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         naked_puts_engaged = float(r[0])
         c.close()
-        print('total naked put:', naked_puts_engaged)
+        # print('total naked put:', naked_puts_engaged)
         return naked_puts_engaged
 
     def getItmNakedPutAmount(self, account: str):
@@ -857,7 +857,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         getItmNakedPutAmount = float(r[0])
         c.close()
-        print('getItmNakedPutAmount:', getItmNakedPutAmount)
+        # print('getItmNakedPutAmount:', getItmNakedPutAmount)
         return getItmNakedPutAmount
 
     # Very similar to the previous one.
@@ -886,7 +886,7 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         getItmShortCallsAmount = -float(r[0])
         c.close()
-        print('getItmShortCallsAmount:', getItmShortCallsAmount)
+        # print('getItmShortCallsAmount:', getItmShortCallsAmount)
         return getItmShortCallsAmount
 
     """
@@ -1071,6 +1071,8 @@ class Trader(wrapper.EWrapper, EClient):
                 c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
             elif tickType == TickTypeEnum.CLOSE:    # 9
                 c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.OPEN:    # 14
+                pass
             elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
                 pass
             else:
@@ -1227,7 +1229,27 @@ class Trader(wrapper.EWrapper, EClient):
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         super().historicalDataEnd(reqId, start, end)
 #        print("HistoricalDataEnd. ReqId:", reqId, "from", start, "to", end)
+        # get contract price, in case it's not in current portfolio
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol FROM contract WHERE contract.api_req_id = ?',
+            (reqId , ))
+        r = c.fetchone()
+        contract = Contract()
+        contract.exchange = 'SMART'
+        contract.conId = r[0]
+        contract.currency = r[1]
+        contract.secType = r[2]
+        contract.symbol = r[3]
+        # clear current id and make a new one
         self.clearRequestId(reqId)
+        nextReqId = self.getNextTickerId()
+        t = (nextReqId, contract.conId, )
+        c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
+        c.close()
+        self.db.commit()
+        self.reqMktData(nextReqId, contract, "", True, False, [])
     # ! [historicaldataend]
 
     @iswrapper
@@ -1629,7 +1651,7 @@ class Trader(wrapper.EWrapper, EClient):
                     contract.right = rec[4]
                     contract.multiplier = "100"
                     price = round((rec[8] + rec[9]) / 2, 2)
-                    print(price)
+                    # print(price)
                     self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellCoveredCall(price, math.floor(net_pos/100)))
         # print('sellCoveredCallsIfPossible done.')
 
