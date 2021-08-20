@@ -1063,17 +1063,22 @@ class Trader(wrapper.EWrapper, EClient):
             self.getDbConnection()
             c = self.db.cursor()
             t = (price, reqId, )
-            if tickType == TickTypeEnum.LAST:   # 4
+            if (tickType == TickTypeEnum.LAST) or (tickType == TickTypeEnum.DELAYED_LAST):   # 4
                 c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+                if c.rowcount != 1:
+                    print('failed to store price')
             elif tickType == TickTypeEnum.BID:  # 1
                 c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
             elif tickType == TickTypeEnum.ASK:  # 2
                 c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
-            elif tickType == TickTypeEnum.CLOSE:    # 9
+            elif (tickType == TickTypeEnum.CLOSE) or (tickType == TickTypeEnum.DELAYED_CLOSE):    # 9
                 c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
-            elif tickType == TickTypeEnum.OPEN:    # 14
-                pass
-            elif ((tickType == TickTypeEnum.HIGH) or (tickType == TickTypeEnum.LOW)):   # 6 & 7
+            elif ((tickType == TickTypeEnum.HIGH) \
+                or (tickType == TickTypeEnum.DELAYED_HIGH) \
+                or (tickType == TickTypeEnum.LOW) \
+                or (tickType == TickTypeEnum.DELAYED_LOW) \
+                or (tickType == TickTypeEnum.OPEN) \
+                or (tickType == TickTypeEnum.DELAYED_OPEN)):   # 6 & 7
                 pass
             else:
                 print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
@@ -1082,7 +1087,7 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [tickprice]
 
     @iswrapper
-    # ! [tickoptioncomputation]
+    # reqMktData callback
     def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int,
                               impliedVol: float, delta: float, optPrice: float, pvDividend: float,
                               gamma: float, vega: float, theta: float, undPrice: float):
@@ -1107,6 +1112,8 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
         elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
             c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+            if c.rowcount != 1:
+                print('failed to store price')
         else:
             print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
         c.close()
@@ -1114,10 +1121,25 @@ class Trader(wrapper.EWrapper, EClient):
     # ! [tickoptioncomputation]
 
     @iswrapper
-    # ! [ticksnapshotend]
+    # reqMktData callback
     def tickSnapshotEnd(self, reqId: int):
         super().tickSnapshotEnd(reqId)
-        self.clearRequestIdAndContinue(reqId)
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol FROM contract WHERE contract.api_req_id = ?',
+            (reqId , ))
+        r = c.fetchone()
+        if r:
+            secType = r[2]
+        else:
+            # error!
+            secType = None
+        c.close()
+        if secType == 'OPT':
+            self.clearRequestIdAndContinue(reqId)
+        else:
+            self.clearRequestId(reqId)
     # ! [ticksnapshotend]
 
     @iswrapper
@@ -1128,21 +1150,6 @@ class Trader(wrapper.EWrapper, EClient):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
         if exchange == "SMART":
-            # print("SecurityDefinitionOptionParameter.", "ReqId:", reqId, "Exchange:", exchange, "Underlying conId:", underlyingConId, "TradingClass:", tradingClass, "Multiplier:", multiplier, "Expirations:", expirations, "Strikes:", str(strikes))
-            # self.getDbConnection()
-            # c = self.db.cursor()
-            # t = (underlyingConId, )
-            # c.execute(
-            #     'UPDATE contract'
-            #     '    SET ask = NULL, bid = NULL'
-            #     '    WHERE contract.id IN ('
-            #     '        SELECT option.id'
-            #     '            FROM option, contract stock_contract'
-            #     '            WHERE option.stock_id = stock_contract.id'
-            #     '                AND stock_contract.con_id = ?)'
-            #     , t)
-            # c.close()
-            # self.db.commit()
             self.wheelSymbolsExpirations = sorted(expirations)
             self.wheelSymbolsProcessingStrikes = sorted(strikes)
             self.wheelSymbolsProcessingSymbol = tradingClass
@@ -1234,7 +1241,7 @@ class Trader(wrapper.EWrapper, EClient):
         c = self.db.cursor()
         c.execute(
             'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol FROM contract WHERE contract.api_req_id = ?',
-            (reqId , ))
+            (reqId, ))
         r = c.fetchone()
         contract = Contract()
         contract.exchange = 'SMART'
@@ -1243,10 +1250,13 @@ class Trader(wrapper.EWrapper, EClient):
         contract.secType = r[2]
         contract.symbol = r[3]
         # clear current id and make a new one
-        self.clearRequestId(reqId)
+        # self.clearRequestId(reqId)
         nextReqId = self.getNextTickerId()
-        t = (nextReqId, contract.conId, )
-        c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
+        c.execute(
+            'UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', 
+            (nextReqId, contract.conId, ))
+        if c.rowcount != 1:
+            print('failed to store price')
         c.close()
         self.db.commit()
         self.reqMktData(nextReqId, contract, "", True, False, [])
@@ -1266,8 +1276,9 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('UPDATE stock SET industry = ?, category = ?, subcategory = ? WHERE id = (SELECT id FROM contract WHERE contract.con_id = ?)', t)
 
             nextReqId = self.getNextTickerId()
-            t = (nextReqId, contractDetails.contract.conId, )
-            c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
+            c.execute(
+                'UPDATE contract SET api_req_id = ?, name = ? WHERE contract.con_id = ?',
+                (nextReqId, contractDetails.longName, contractDetails.contract.conId, ))
             c.close()
             self.db.commit()
 #            print('requesting reqHistoricalData with id', nextReqId, contractDetails.contract)
@@ -1279,11 +1290,14 @@ class Trader(wrapper.EWrapper, EClient):
             print('requesting reqSecDefOptParams for', contractDetails.contract)
             self.reqSecDefOptParams(self.getNextTickerId(), contractDetails.contract.symbol, "", contractDetails.contract.secType, contractDetails.contract.conId)
         elif contractDetails.contract.secType == 'OPT':
+            nextReqId = self.getNextTickerId()
             self.getDbConnection()
             c = self.db.cursor()
-            nextReqId = self.getNextTickerId()
-            t = (nextReqId, contractDetails.contract.conId, )
-            c.execute('UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', t)
+            c.execute(
+                'UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', 
+                (nextReqId, contractDetails.contract.conId, ))
+            if c.rowcount != 1:
+                print('failed to store price')
             c.close()
             self.db.commit()
             self.reqMktData(nextReqId, contractDetails.contract, "", True, False, [])
@@ -1453,7 +1467,7 @@ class Trader(wrapper.EWrapper, EClient):
         # naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
 
         # how much do we need to cover ITM short?
-        naked_puts_amount = self.getItmNakedPutAmount(self.account) + self.getItmShortCallsAmount(self.account)
+        naked_puts_amount = self.getItmNakedPutAmount(self.account) # no, because maybe not the same maturity + self.getItmShortCallsAmount(self.account)
 
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
@@ -1487,7 +1501,7 @@ class Trader(wrapper.EWrapper, EClient):
             print('buyable_benchmark:', to_adjust)
         # else:
         #     to_adjust = 0
-        print('to_adjust:', to_adjust)
+        # print('to_adjust:', to_adjust)
         to_adjust = math.floor(to_adjust)
         print('adjusted to_adjust:', to_adjust)
         if (to_adjust != (benchmark_on_buy + benchmark_on_sale)):
@@ -1496,10 +1510,10 @@ class Trader(wrapper.EWrapper, EClient):
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
 
             to_adjust += self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
-            if (to_adjust > 0):
-                print('toBuy: ', to_adjust)
+            if (to_adjust >= 2): # don't buy less than 2 units
+                print('to buy: ', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
-            elif (to_adjust < 0):
+            elif (to_adjust <= -2): # don't sell less than 2 units
                 print('to sell: ', -to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
@@ -1572,16 +1586,17 @@ class Trader(wrapper.EWrapper, EClient):
                         print('Placing order for', rec)
                         contract = Contract()
                         contract.secType = "OPT"
-    #                        contract.currency = benchmarkCurrency
+                        contract.currency = 'USD'
                         contract.exchange = "SMART"
                         contract.symbol = rec[1]
                         contract.lastTradeDateOrContractMonth = rec[2].replace('-', '')
                         contract.strike = rec[3]
                         contract.right = rec[4]
-    #                        contract.multiplier = "100"
-                        price = round((rec[8] + rec[9]) / 2, 2)
+                        contract.multiplier = "100"
+                        midprice = round((rec[8] + rec[9]) / 2, 2)
+                        askprice = round(rec[9], 2)
                         # print(rec[8], rec[9], price)
-                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(price))
+                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(askprice))
                         # stop after first submitted order
                         break
                     else:
@@ -1747,7 +1762,7 @@ class Trader(wrapper.EWrapper, EClient):
                 if (len(opt) >= 1):
                     min_price = opt[0][7] - opt[0][11]
                     max_price = opt[0][8] - opt[0][10]
-                    price = (min_price + max_price) / 2
+                    price = round((min_price + max_price) / 2, 2)
                     # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
@@ -1784,14 +1799,14 @@ class Trader(wrapper.EWrapper, EClient):
                     , (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
-                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
+                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9]))
                 print(len(opt), 'possible contracts, by delta:')
                 for c in opt:
                     print(c)
                 if (len(opt) >= 1):
                     min_price = opt[0][7] - opt[0][11]
                     max_price = opt[0][8] - opt[0][10]
-                    price = (min_price + max_price) / 2
+                    price = round((min_price + max_price) / 2, 2)
                     # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
