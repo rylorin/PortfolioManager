@@ -420,7 +420,7 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('SELECT id FROM contract WHERE secType = ? AND symbol = ?', t)
             r = c.fetchone()
             if not r:
-                print('stock contract not found:', contract)
+                # print('stock contract not found:', contract)
                 t = ('STK', self.normalizeSymbol(contract.symbol), contract.primaryExchange, contract.currency, contract.conId)
                 c.execute('INSERT INTO contract(secType, symbol, exchange, currency, con_id) VALUES (?, ?, ?, ?, ?)', t)
                 id = c.lastrowid
@@ -855,7 +855,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND stock.price < option.strike '
             , t)
         r = c.fetchone()
-        getItmNakedPutAmount = float(r[0])
+        if r[0]:
+            getItmNakedPutAmount = float(r[0])
+        else:
+            getItmNakedPutAmount = 0
         c.close()
         # print('getItmNakedPutAmount:', getItmNakedPutAmount)
         return getItmNakedPutAmount
@@ -1224,7 +1227,7 @@ class Trader(wrapper.EWrapper, EClient):
             ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
             t)
         if c.rowcount != 1:
-            print('failed to store volatility')
+            print('historicalData. Error: failed to store volatility.')
         else:
             # print(c.rowcount, 'record(s) updated with historical volatility')
             pass
@@ -1243,23 +1246,24 @@ class Trader(wrapper.EWrapper, EClient):
             'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol FROM contract WHERE contract.api_req_id = ?',
             (reqId, ))
         r = c.fetchone()
-        contract = Contract()
-        contract.exchange = 'SMART'
-        contract.conId = r[0]
-        contract.currency = r[1]
-        contract.secType = r[2]
-        contract.symbol = r[3]
-        # clear current id and make a new one
-        # self.clearRequestId(reqId)
-        nextReqId = self.getNextTickerId()
-        c.execute(
-            'UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', 
-            (nextReqId, contract.conId, ))
-        if c.rowcount != 1:
-            print('failed to store price')
+        if r:
+            nextReqId = self.getNextTickerId()
+            contract = Contract()
+            contract.exchange = 'SMART'
+            contract.conId = r[0]
+            contract.currency = r[1]
+            contract.secType = r[2]
+            contract.symbol = r[3]
+            # clear current id and make a new one
+            # self.clearRequestId(reqId)
+            c.execute(
+                'UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', 
+                (nextReqId, contract.conId, ))
+            self.reqMktData(nextReqId, contract, "", True, False, [])
+        else:
+            print('historicalDataEnd. Error: record not found.')
         c.close()
         self.db.commit()
-        self.reqMktData(nextReqId, contract, "", True, False, [])
     # ! [historicaldataend]
 
     @iswrapper
@@ -1333,7 +1337,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.clearPortfolioPositions(self.account)
             self.clearOpenOrders(self.account)
 
-            self.reqMarketDataType(MarketDataTypeEnum.DELAYED_FROZEN)
+            # self.reqMarketDataType(MarketDataTypeEnum.REALTIME)
             # start account updates
             self.reqAccountUpdates(True, self.account)
             # Requesting the next valid id. The parameter is always ignored.
@@ -1511,10 +1515,10 @@ class Trader(wrapper.EWrapper, EClient):
 
             to_adjust += self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
             if (to_adjust >= 2): # don't buy less than 2 units
-                print('to buy: ', to_adjust)
+                print('to buy:', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
             elif (to_adjust <= -2): # don't sell less than 2 units
-                print('to sell: ', -to_adjust)
+                print('to sell:', -to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
     def sellNakedPuts(self):
@@ -1577,12 +1581,11 @@ class Trader(wrapper.EWrapper, EClient):
                 # verify that this symbol is in our wheel
                 nav_ratio = self.getWheelSymbolNavRatio(self.account, rec[1])
                 if nav_ratio:
-                    engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
-                    print(rec[1], engaged, round(engaged / portfolio_nav * 100, 1), '% engaged for stock')
-                    engaged += rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD')
-                    print(rec[5], engaged, round(engaged / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13],'and expected yield of', rec[7], rec)
-                    # verify that we don't already have naked put position
-                    if engaged <= (portfolio_nav * nav_ratio):
+                    already_engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
+                    engaged_with_put = already_engaged + (rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD'))
+                    if engaged_with_put <= (portfolio_nav * nav_ratio):
+                        print(rec[1], already_engaged, round(already_engaged / portfolio_nav * 100, 1), '% engaged for stock')
+                        print(rec[5], engaged_with_put, round(engaged_with_put / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13], 'and expected yield of', rec[7], rec)
                         print('Placing order for', rec)
                         contract = Contract()
                         contract.secType = "OPT"
@@ -1596,11 +1599,11 @@ class Trader(wrapper.EWrapper, EClient):
                         midprice = round((rec[8] + rec[9]) / 2, 2)
                         askprice = round(rec[9], 2)
                         # print(rec[8], rec[9], price)
-                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(askprice))
+                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(midprice))
                         # stop after first submitted order
                         break
                     else:
-                        print(rec[5], 'max engagement reached')
+                        print(rec[5], 'ignored', rec, round(already_engaged / portfolio_nav * 100, 1), '% already engaged for stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put')
                 else:
                     print(rec[5], 'stopped')
 
@@ -1828,8 +1831,8 @@ class Trader(wrapper.EWrapper, EClient):
         contract.symbol = self.wheelSymbolsProcessingSymbol
         contract.secType = 'STK'
         contract.exchange = 'SMART'
+        contract.currency = 'USD'
         # print('requesting reqSecDefOptParams for', contract)
-        # self.reqSecDefOptParams(self.getNextTickerId(), contract.symbol, "", contract.secType, contract.conId)
         self.reqContractDetails(self.getNextTickerId(), contract)
 
     def processCurrentOptionExpiration(self):
