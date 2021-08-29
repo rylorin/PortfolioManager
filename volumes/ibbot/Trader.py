@@ -1603,7 +1603,7 @@ class Trader(wrapper.EWrapper, EClient):
                         # stop after first submitted order
                         break
                     else:
-                        print(rec[5], 'ignored', rec, round(already_engaged / portfolio_nav * 100, 1), '% already engaged for stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put')
+                        print(rec[5], 'ignored', round(already_engaged / portfolio_nav * 100, 1), '% already engaged for stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put')
                 else:
                     print(rec[5], 'stopped')
 
