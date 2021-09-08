@@ -32,7 +32,7 @@ class TraderOrder:
 
     @staticmethod
     def BuyBenchmark(quantity: int):
-        order = TraderOrder.Midprice("BUY", quantity, 1)
+        order = TraderOrder.Midprice("BUY", quantity, 100)
         # always true because of price cap that will prevent execution
         order.transmit = True
         return order
@@ -50,7 +50,9 @@ class TraderOrder:
         order.action = 'SELL'
         order.orderType = "LMT"
         order.totalQuantity = 1
-        order.lmtPrice = priceCap
+        order.lmtPrice = priceCap + 10 # Test
+        # always true because of price cap that will prevent execution
+        order.transmit = True
         return order
 
     @staticmethod

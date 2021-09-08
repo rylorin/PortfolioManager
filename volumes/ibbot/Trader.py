@@ -1517,7 +1517,7 @@ class Trader(wrapper.EWrapper, EClient):
             if (to_adjust >= 2): # don't buy less than 2 units
                 print('to buy:', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
-            elif (to_adjust <= -2): # don't sell less than 2 units
+            elif (to_adjust < 0):
                 print('to sell:', -to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
@@ -1585,8 +1585,8 @@ class Trader(wrapper.EWrapper, EClient):
                     engaged_with_put = already_engaged + (rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD'))
                     if engaged_with_put <= (portfolio_nav * nav_ratio):
                         print(rec[1], already_engaged, round(already_engaged / portfolio_nav * 100, 1), '% engaged for stock')
+                        print('Placing order for', rec[5])
                         print(rec[5], engaged_with_put, round(engaged_with_put / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13], 'and expected yield of', rec[7], rec)
-                        print('Placing order for', rec)
                         contract = Contract()
                         contract.secType = "OPT"
                         contract.currency = 'USD'
@@ -1605,7 +1605,7 @@ class Trader(wrapper.EWrapper, EClient):
                     else:
                         print(rec[5], 'ignored', round(already_engaged / portfolio_nav * 100, 1), '% already engaged for stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put')
                 else:
-                    print(rec[5], 'stopped')
+                    print(rec[1], 'stopped')
 
     def sellCoveredCallsIfPossible(self,
             contract: Contract, position: float,
