@@ -403,6 +403,25 @@ class Trader(wrapper.EWrapper, EClient):
 #        print('getNakedCallWinRatio:', getNakedCallWinRatio)
         return getNakedCallWinRatio
 
+    def getRollDaysBefore(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.Roll_Days_Before'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        if r[0]:
+            getRollDaysBefore = float(r[0])
+        else:
+            getRollDaysBefore = 0
+        c.close()
+        self.db.commit()
+#        print('getRollDaysBefore:', getNakedCallWinRatio)
+        return getRollDaysBefore
+
     #
     # Other
     #
@@ -736,6 +755,28 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         # print('getPortfolioStocksValue:', getPortfolioStocksValue)
         return getPortfolioStocksValue
+
+    def getPortfolioStocksQuantity(self, account: str, stock: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (account, 'STK', )
+        sql = 'SELECT SUM(position.quantity) ' \
+            'FROM position, portfolio, contract ' \
+            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
+            ' AND position.contract_id = contract.id ' \
+            ' AND contract.secType = ? '
+        if stock:
+            t += (stock, )
+            sql += ' AND contract.symbol = ?'
+        c.execute(sql, t)
+        r = c.fetchone()
+        if r[0]:
+            getPortfolioStocksQuantity = float(r[0])
+        else:
+            getPortfolioStocksQuantity = 0
+        c.close()
+        print('getPortfolioStocksQuantity:', getPortfolioStocksQuantity)
+        return getPortfolioStocksQuantity
 
     """
     Get positions information (options)
@@ -1213,8 +1254,8 @@ class Trader(wrapper.EWrapper, EClient):
         self.db.commit()
     # ! [orderstatus]
 
-    @iswrapper
     # reqHistoricalData callback
+    @iswrapper
     def historicalData(self, reqId:int, bar: BarData):
         super().historicalData(reqId, bar)
 #        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
@@ -1235,6 +1276,7 @@ class Trader(wrapper.EWrapper, EClient):
         self.db.commit()
     # ! [historicaldata]
 
+    # reqHistoricalData callback
     @iswrapper
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         super().historicalDataEnd(reqId, start, end)
@@ -1463,6 +1505,9 @@ class Trader(wrapper.EWrapper, EClient):
 
         benchmark = self.getBenchmark(self.account)
         benchmarkSymbol = benchmark.symbol
+        benchmarkPrice = self.getSymbolPrice(benchmarkSymbol)
+        benchmarkCurrency = self.getSymbolCurrency(benchmarkSymbol)
+        benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, benchmarkSymbol)
 
         # how much cash do we have?
         total_cash = self.getTotalCashAmount(self.account)
@@ -1482,9 +1527,6 @@ class Trader(wrapper.EWrapper, EClient):
         print('benchmark_on_sale', benchmark_on_sale)
 
         # benchmark price in base
-        benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, benchmarkSymbol)
-        benchmarkPrice = self.getSymbolPrice(benchmarkSymbol)
-        benchmarkCurrency = self.getSymbolCurrency(benchmarkSymbol)
         benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
@@ -1493,7 +1535,10 @@ class Trader(wrapper.EWrapper, EClient):
 
         if net_cash < 0:
             to_adjust = net_cash / benchmarkPriceInBase
-        # elif benchmarkCurrencyBalance > (net_cash * benchmarkBaseToCurrencyRatio):
+            max_stocks = self.getPortfolioStocksQuantity(self.account, benchmarkCurrency)
+            if (-to_adjust > max_stocks):
+                to_adjust = -max_stocks
+            print('sellable_benchmark:', -to_adjust)
         else:
             net_cash += self.getNakedPutAmount(self.account, benchmarkSymbol)
             net_cash = min(net_cash, benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio)
@@ -1603,9 +1648,9 @@ class Trader(wrapper.EWrapper, EClient):
                         # stop after first submitted order
                         break
                     else:
-                        print(rec[5], 'ignored', round(already_engaged / portfolio_nav * 100, 1), '% already engaged for stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put')
+                        print(rec[5], 'ignored.', round(already_engaged / portfolio_nav * 100, 1), '% already engaged for this stock and', round(engaged_with_put / portfolio_nav * 100, 1), '% would be engaged with this Put.')
                 else:
-                    print(rec[1], 'stopped')
+                    print(rec[5], 'stopped.')
 
     def sellCoveredCallsIfPossible(self,
             contract: Contract, position: float,
@@ -1715,7 +1760,7 @@ class Trader(wrapper.EWrapper, EClient):
         # print(expiration, now, hours)
         if (not self.ordersLoaded) \
             or (not contract.symbol in self.wheelSymbolsProcessed) \
-            or (not position) or (hours > 12) \
+            or (not position) or (hours > (24 * self.getRollDaysBefore(accountName))) \
             or (seconds < (self.lastRollOptionTime[contract.conId] + self.getRollOptionsSleep(accountName))):
             return
         self.lastRollOptionTime[contract.conId] = seconds
@@ -1752,10 +1797,10 @@ class Trader(wrapper.EWrapper, EClient):
                       AND option.last_trade_date > option_ref.last_trade_date
                       AND contract_ref.ask <= contract.bid
                       AND option_ref.call_or_put = option.call_or_put
-                      AND option.strike >= option_ref.strike
+                      AND option.strike > option_ref.strike
                      ORDER BY option.last_trade_date ASC, option.strike DESC
-                    """
-                    , (contract.conId, ))
+                    """,
+                    (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
                 opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
@@ -1775,7 +1820,7 @@ class Trader(wrapper.EWrapper, EClient):
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
-                #   strike <= underlying price
+                #   strike < underlying price
                 #   maturity > current maturity
                 #   same underlying stock
                 #   bid > current ask, > and not >= to handle the 0 ask/bid case (???)
@@ -1795,11 +1840,11 @@ class Trader(wrapper.EWrapper, EClient):
                       AND option.last_trade_date > option_ref.last_trade_date
                       AND contract_ref.ask < contract.bid
                       AND option_ref.call_or_put = option.call_or_put
-                      AND option.strike <= option_ref.strike
+                      AND option.strike < option_ref.strike
                       AND option.delta NOTNULL
                      ORDER BY option.last_trade_date ASC, option.strike ASC
-                    """
-                    , (contract.conId, ))
+                    """,
+                    (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
                 opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item2[9] - item1[9]))
@@ -1823,6 +1868,7 @@ class Trader(wrapper.EWrapper, EClient):
             if self.useCache:
                 self.wheelSymbolsProcessed = self.getWheelSymbolsToProcess()
         self.wheelSymbolsProcessingSymbol = self.wheelSymbolsToProcess.pop(0)
+        price = self.getSymbolPrice(self.wheelSymbolsProcessingSymbol)
         contract = Contract()
         conId = self.getContractConId(self.wheelSymbolsProcessingSymbol)
         if conId:
@@ -1832,8 +1878,13 @@ class Trader(wrapper.EWrapper, EClient):
         contract.secType = 'STK'
         contract.exchange = 'SMART'
         contract.currency = 'USD'
-        # print('requesting reqSecDefOptParams for', contract)
-        self.reqContractDetails(self.getNextTickerId(), contract)
+        if price:
+            self.reqContractDetails(self.getNextTickerId(), contract)
+        else:
+            # skip this symbol if we don't have price information, the above call should fill it for next run
+            nextReqId = self.getNextTickerId()
+            self.reqMktData(nextReqId, contract, "", True, False, [])
+            self.selectNextSymbol()
 
     def processCurrentOptionExpiration(self):
         # print('processCurrentOptionExpiration.')
