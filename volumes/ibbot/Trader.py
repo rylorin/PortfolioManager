@@ -1594,6 +1594,10 @@ class Trader(wrapper.EWrapper, EClient):
             return
         self.lastNakedPutsSale = seconds
 
+        portfolio_nav = self.getTotalCashAmount(self.account)
+        portfolio_nav += self.getPortfolioStocksValue(self.account, None)
+        portfolio_nav += self.getPortfolioOptionsValue(self.account, None)
+        
         puttable_amount = self.getTotalCashAmount(self.account)
         puttable_amount += self.getBenchmarkAmountInBase(self.account)
         puttable_amount *= self.getNakedPutRatio(self.account)
