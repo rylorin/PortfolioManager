@@ -216,6 +216,25 @@ class Trader(wrapper.EWrapper, EClient):
         # print('getBenchmark:', getBenchmark)
         return getBenchmark
 
+    def getBenchmarkAmountInBase(self, account: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            """
+            SELECT contract.price * SUM(position.quantity) / currency.rate
+            FROM portfolio, currency, contract, position
+            WHERE portfolio.account = ?
+            AND contract.id = portfolio.benchmark_id
+            AND position.portfolio_id = portfolio.id AND position.contract_id = portfolio.benchmark_id
+            AND currency.currency = contract.currency
+            """,
+            (account, ))
+        r = c.fetchone()
+        getBenchmarkAmountInBase = float(r[0])
+        c.close()
+        # print('getBenchmarkAmountInBase:', getBenchmarkAmountInBase)
+        return getBenchmarkAmountInBase
+
 #
 # Trading settings
 #
@@ -632,10 +651,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND currency.base = ?',
             t)
         r = c.fetchone()
-        benchmarkPrice = float(r[0])
+        getSymbolPriceInBase = float(r[0])
         c.close()
         # print('getSymbolPriceInBase:', benchmarkPrice)
-        return benchmarkPrice
+        return getSymbolPriceInBase
     
     def getUnderlyingPrice(self, contract: Contract):
         self.getDbConnection()
@@ -1535,7 +1554,7 @@ class Trader(wrapper.EWrapper, EClient):
 
         if net_cash < 0:
             to_adjust = net_cash / benchmarkPriceInBase
-            max_stocks = self.getPortfolioStocksQuantity(self.account, benchmarkCurrency)
+            max_stocks = self.getPortfolioStocksQuantity(self.account, benchmarkSymbol)
             if (-to_adjust > max_stocks):
                 to_adjust = -max_stocks
             print('sellable_benchmark:', -to_adjust)
@@ -1575,19 +1594,10 @@ class Trader(wrapper.EWrapper, EClient):
             return
         self.lastNakedPutsSale = seconds
 
-        # how much cash do we have?
-        portfolio_nav = self.getTotalCashAmount(self.account)
-        portfolio_nav += self.getPortfolioStocksValue(self.account, None)
-        portfolio_nav += self.getPortfolioOptionsValue(self.account, None)
-        print('portfolio_nav:', portfolio_nav)
-
-        # how much did we engage with ALL short puts?
-        naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
-
-        # how much short put we can sell, regarding global portfolio size
-        nakedPutsRatio = self.getNakedPutRatio(self.account)
-        puttable_amount = (portfolio_nav * nakedPutsRatio) + naked_puts_engaged
-
+        puttable_amount = self.getTotalCashAmount(self.account)
+        puttable_amount += self.getBenchmarkAmountInBase(self.account)
+        puttable_amount *= self.getNakedPutRatio(self.account)
+        puttable_amount += self.getTotalNakedPutAmount(self.account)
         puttable_amount += self.getOptionsAmountOnOrderBook(self.account, None, 'P', 'SELL')
         print('puttable_amount:', puttable_amount)
 
@@ -1629,9 +1639,22 @@ class Trader(wrapper.EWrapper, EClient):
                     already_engaged = self.getPortfolioStocksValue(self.account, rec[1]) - self.getNakedPutAmount(self.account, rec[1]) - self.getOptionsAmountOnOrderBook(self.account, rec[1], 'P', 'SELL')
                     engaged_with_put = already_engaged + (rec[3] * 100 / self.getBaseToCurrencyRate(self.account, 'USD'))
                     if engaged_with_put <= (portfolio_nav * nav_ratio):
-                        print(rec[1], already_engaged, round(already_engaged / portfolio_nav * 100, 1), '% engaged for stock')
-                        print('Placing order for', rec[5])
-                        print(rec[5], engaged_with_put, round(engaged_with_put / portfolio_nav * 100, 1), '% engaged with this Put of delta', rec[13], 'and expected yield of', rec[7], rec)
+                        askprice = round(rec[9], 2)
+                        bidprice = round(rec[8], 2)
+                        midprice = round((rec[8] + rec[9]) / 2, 2)
+                        print(
+                            'Placing order for', rec[5],
+                            round(already_engaged, 2), round(already_engaged / portfolio_nav * 100, 1), '% engaged for stock and',
+                            round(engaged_with_put, 2), round(engaged_with_put / portfolio_nav * 100, 1), '% engaged with this Put',
+                            'of delta', round(rec[13], 2),
+                            'and expected yield of', round(rec[7] * 100, 1), '%',
+                            'with underlying price of', round(rec[10], 2),
+                            'and bid price of', bidprice,
+                            'and ask price of', askprice,
+                            'with DTE of', round(rec[6], 1),
+                            'with option implied vol. of', round(rec[11] * 100, 0), '%',
+                            'and stock historycal vol. of', round(rec[12] * 100, 0), '%'
+                            )
                         contract = Contract()
                         contract.secType = "OPT"
                         contract.currency = 'USD'
@@ -1641,10 +1664,7 @@ class Trader(wrapper.EWrapper, EClient):
                         contract.strike = rec[3]
                         contract.right = rec[4]
                         contract.multiplier = "100"
-                        midprice = round((rec[8] + rec[9]) / 2, 2)
-                        askprice = round(rec[9], 2)
-                        # print(rec[8], rec[9], price)
-                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(midprice))
+                        self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellNakedPut(askprice))
                         # stop after first submitted order
                         break
                     else:
@@ -1787,7 +1807,8 @@ class Trader(wrapper.EWrapper, EClient):
                     """
                     SELECT contract.con_id,
                       option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
-                      julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1, (contract.bid - contract_ref.ask) / option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 360,
+                      (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) dte,
+                      ((contract.bid - contract_ref.ask) / option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 365.25) yield,
                       contract.bid, contract.ask, option.delta, contract_ref.bid, contract_ref.ask, contract_ref.price
                      FROM contract, option, contract contract_ref, option option_ref
                      WHERE contract_ref.con_id = ?
@@ -1803,17 +1824,32 @@ class Trader(wrapper.EWrapper, EClient):
                     (contract.conId, ))
                 opt = c.fetchall()
                 c.close()
-                opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
-                print(len(opt), 'possible contracts, by delta:')
-                for c in opt:
-                    print(c)
-                if (len(opt) >= 1):
-                    min_price = opt[0][7] - opt[0][11]
-                    max_price = opt[0][8] - opt[0][10]
+                print(len(opt), 'possible contracts')
+                if len(opt) > 0:
+                    # sort by delta
+                    opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
+                    # default is to select lowest risky contract
+                    c = opt[0]
+                    conId = c[0]
+                    min_price = c[7] - c[11]
+                    max_price = c[8] - c[10]
+
+                    # unless we can find a high yielding one with
+                    # strike >= underlying price
+                    # delta < (1 - succes ratio)
+                    delta = (1 - self.getNakedCallWinRatio(accountName))
+                    opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
+                    for c in opt:
+                        print(c)
+                        if (c[2] > underlying_price) and (c[9] <= delta):
+                            conId = c[0]
+                            min_price = c[7] - c[11]
+                            max_price = c[8] - c[10]
+
+                    # place order
                     price = round((min_price + max_price) / 2, 2)
-                    # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
                     self.placeOrder(self.nextOrderId(),
-                        self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
+                        self.OptionComboContract(contract.symbol, conId, contract.conId),
                         TraderOrder.ComboLimitOrder("SELL", -position, price, False))
             elif (contract.right == 'P' and underlying_price < contract.strike):
                 print('Need to roll ITM Put', contract)
@@ -1851,6 +1887,8 @@ class Trader(wrapper.EWrapper, EClient):
                 print(len(opt), 'possible contracts, by delta:')
                 for c in opt:
                     print(c)
+                for i in range(len(opt)):
+                    pass
                 if (len(opt) >= 1):
                     min_price = opt[0][7] - opt[0][11]
                     max_price = opt[0][8] - opt[0][10]
