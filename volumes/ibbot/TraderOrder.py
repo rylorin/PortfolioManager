@@ -74,14 +74,14 @@ class TraderOrder:
     @staticmethod
     def ComboLimitOrder(action:str, quantity:float, limitPrice:float, 
                         nonGuaranteed:bool):
-        # ! [combolimit]
         order = TraderOrder.Order()
         order.action = action
         order.orderType = "LMT"
         order.totalQuantity = quantity
-        order.lmtPrice = limitPrice
+        order.lmtPrice = limitPrice + 10 # Test
         if nonGuaranteed:
             order.smartComboRoutingParams = []
             order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
-        # ! [combolimit]
+        # always true because of price cap that will prevent execution
+        order.transmit = True
         return order
