@@ -252,7 +252,7 @@ class Trader(wrapper.EWrapper, EClient):
             """
             )
         getWheelSymbolsToProcess = [item[0] for item in c.fetchall()]
-#        getWheelSymbolsToProcess = [ 'SPY' ] # for testing
+#        getWheelSymbolsToProcess = [ 'RSX' ] # for testing
         c.close()
         # print('getWheelSymbolsToProcess:', getWheelSymbolsToProcess)
         return getWheelSymbolsToProcess
@@ -1125,7 +1125,7 @@ class Trader(wrapper.EWrapper, EClient):
         if price >= 0:
             self.getDbConnection()
             c = self.db.cursor()
-            t = (price, reqId, )
+            t = (round(price, 2), reqId, )
             if (tickType == TickTypeEnum.LAST) or (tickType == TickTypeEnum.DELAYED_LAST):   # 4
                 c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
                 if c.rowcount != 1:
@@ -1159,26 +1159,33 @@ class Trader(wrapper.EWrapper, EClient):
                                       optPrice, pvDividend, gamma, vega, theta, undPrice)
         self.getDbConnection()
         c = self.db.cursor()
-        t = (optPrice, reqId, )
         if tickType == TickTypeEnum.MODEL_OPTION: # 13
 # à priori ça n'est pas le prix mais peut-être le prix théorique
 #            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
+            if impliedVol:
+                impliedVol = round(impliedVol, 3)
+            if delta:
+                delta = round(delta, 3)
             t = (impliedVol, delta, pvDividend, gamma, vega, theta, reqId, )
             c.execute(
                 'UPDATE option '
                 ' SET Implied_Volatility = ?, Delta = ?, pv_Dividend = ?, Gamma = ?, Vega = ?, Theta = ? '
                 ' WHERE option.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
                 t)
-        elif tickType == TickTypeEnum.BID_OPTION_COMPUTATION:   # 10
-            c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:   # 11
-            c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
-        elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
-            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
-            if c.rowcount != 1:
-                print('failed to store price')
         else:
-            print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
+            if optPrice:
+                optPrice = round(optPrice, 3)
+            t = (optPrice, reqId, )
+            if tickType == TickTypeEnum.BID_OPTION_COMPUTATION:   # 10
+                c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:   # 11
+                c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+            elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
+                c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+                if c.rowcount != 1:
+                    print('failed to store price')
+            else:
+                print('TickOptionComputation. unexpected type:', tickType, 'for reqId:', reqId)
         c.close()
         self.db.commit()
     # ! [tickoptioncomputation]
@@ -1240,13 +1247,41 @@ class Trader(wrapper.EWrapper, EClient):
         r = c.fetchone()
         if not r:
             portfolio_id = self.findPortfolio(order.account)
-            contract_id = self.findOrCreateContract(contract)
-            if contract_id:
-                t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, order.action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
-                c.execute(
-                    'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
-                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    t)  # better use permid
+            if (contract.secType == 'BAG') and (contract.tradingClass == 'COMB'):
+                c.execute('SELECT id FROM contract WHERE con_id = ?', (contract.comboLegs[0].conId, ))
+                r = c.fetchone()
+                if r:
+                    if order.action == contract.comboLegs[0].action:
+                        action = 'BUY'
+                    else:
+                        action = 'SELL'
+                    contract_id = r[0]
+                    t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
+                    c.execute(
+                        'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
+                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        t)  # better use permid
+                c.execute('SELECT id FROM contract WHERE con_id = ?', (contract.comboLegs[1].conId, ))
+                r = c.fetchone()
+                if r:
+                    if order.action == contract.comboLegs[1].action:
+                        action = 'BUY'
+                    else:
+                        action = 'SELL'
+                    contract_id = r[0]
+                    t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
+                    c.execute(
+                        'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
+                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        t)  # better use permid
+            else:
+                contract_id = self.findOrCreateContract(contract)
+                if contract_id:
+                    t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, order.action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
+                    c.execute(
+                        'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
+                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        t)  # better use permid
         c.close()
         self.db.commit()
     # ! [openorder]
@@ -1267,8 +1302,13 @@ class Trader(wrapper.EWrapper, EClient):
         # Update OpenOrder
         self.getDbConnection()
         c = self.db.cursor()
-        t = (status, remaining, orderId, )
-        c.execute('UPDATE open_order SET status = ?, remaining_qty = ? WHERE order_id = ?', t)  # better use permid
+        if status == 'Submitted' or status == 'PreSubmitted':
+            t = (status, remaining, orderId, )
+            c.execute('UPDATE open_order SET status = ?, remaining_qty = ? WHERE order_id = ?', t)  # better use permid
+        elif status == 'Cancelled':
+            c.execute('DELETE FROM open_order WHERE order_id = ?', (orderId, ))  # better use permid
+        else:
+            print('orderStatus. unknow status', status)
         c.close()
         self.db.commit()
     # ! [orderstatus]
@@ -1280,12 +1320,11 @@ class Trader(wrapper.EWrapper, EClient):
 #        print("HistoricalData. ReqId:", reqId, "BarData.", bar)
         self.getDbConnection()
         c = self.db.cursor()
-        t = (bar.close, reqId, )
         c.execute(
             'UPDATE stock '
             ' SET Historical_Volatility = ? '
             ' WHERE stock.id = (SELECT contract.id FROM contract where contract.api_req_id = ?)', 
-            t)
+            (round(bar.close, 4), reqId, ))
         if c.rowcount != 1:
             print('historicalData. Error: failed to store volatility.')
         else:
@@ -1550,6 +1589,7 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
         net_cash = total_cash + naked_puts_amount
+        net_cash = benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio
         print('net_cash:', net_cash)
 
         if net_cash < 0:
@@ -1813,7 +1853,7 @@ class Trader(wrapper.EWrapper, EClient):
                       option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
                       (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) dte,
                       ((contract.bid - contract_ref.ask) / option.strike / (julianday(option.last_trade_date) - julianday(option_ref.last_trade_date) + 1) * 365.25) yield,
-                      contract.bid, contract.ask, option.delta, contract_ref.bid, contract_ref.ask, contract_ref.price
+                      contract.bid, contract.ask, option.delta delta, contract_ref.bid, contract_ref.ask, contract_ref.price
                      FROM contract, option, contract contract_ref, option option_ref
                      WHERE contract_ref.con_id = ?
                       AND contract_ref.id = option_ref.id
@@ -1823,7 +1863,7 @@ class Trader(wrapper.EWrapper, EClient):
                       AND contract_ref.ask <= contract.bid
                       AND option_ref.call_or_put = option.call_or_put
                       AND option.strike > option_ref.strike
-                     ORDER BY option.last_trade_date ASC, option.strike DESC
+                     ORDER BY dte ASC, delta ASC
                     """,
                     (contract.conId, ))
                 opt = c.fetchall()
@@ -1831,24 +1871,25 @@ class Trader(wrapper.EWrapper, EClient):
                 print(len(opt), 'possible contracts')
                 if len(opt) > 0:
                     # sort by delta
-                    opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
+                    # opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[9] - item2[9]))
                     # default is to select lowest risky contract
                     c = opt[0]
                     conId = c[0]
                     min_price = c[7] - c[11]
-                    max_price = c[8] - c[10]
+                    max_price = c[8] - c[11]
 
                     # unless we can find a high yielding one with
                     # strike >= underlying price
                     # delta < (1 - succes ratio)
                     delta = (1 - self.getNakedCallWinRatio(accountName))
-                    opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
+                    # opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
                     for c in opt:
                         print(c)
                         if (c[2] > underlying_price) and (c[9] <= delta):
                             conId = c[0]
                             min_price = c[7] - c[11]
-                            max_price = c[8] - c[10]
+                            max_price = c[8] - c[11]
+                            break
 
                     # place order
                     price = round((min_price + max_price) / 2, 2)
