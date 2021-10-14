@@ -1131,9 +1131,9 @@ class Trader(wrapper.EWrapper, EClient):
                 if c.rowcount != 1:
                     print('failed to store price')
             elif tickType == TickTypeEnum.BID:  # 1
-                c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+                c.execute('UPDATE contract SET bid = ?, bid_date = datetime(\'now\') WHERE api_req_id = ?', t)
             elif tickType == TickTypeEnum.ASK:  # 2
-                c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+                c.execute('UPDATE contract SET ask = ?, ask_date = datetime(\'now\') WHERE api_req_id = ?', t)
             elif (tickType == TickTypeEnum.CLOSE) or (tickType == TickTypeEnum.DELAYED_CLOSE):    # 9
                 c.execute('UPDATE contract SET previous_close_price = ? WHERE api_req_id = ?', t)
             elif ((tickType == TickTypeEnum.HIGH) \
@@ -1177,11 +1177,11 @@ class Trader(wrapper.EWrapper, EClient):
                 optPrice = round(optPrice, 3)
             t = (optPrice, reqId, )
             if tickType == TickTypeEnum.BID_OPTION_COMPUTATION:   # 10
-                c.execute('UPDATE contract SET bid = ? WHERE api_req_id = ?', t)
+                c.execute('UPDATE contract SET bid = ?, bid_date = NULL WHERE api_req_id = ?', t)
             elif tickType == TickTypeEnum.ASK_OPTION_COMPUTATION:   # 11
-                c.execute('UPDATE contract SET ask = ? WHERE api_req_id = ?', t)
+                c.execute('UPDATE contract SET ask = ?, ask_date = NULL WHERE api_req_id = ?', t)
             elif tickType == TickTypeEnum.LAST_OPTION_COMPUTATION:  # 12
-                c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE api_req_id = ?', t)
+                c.execute('UPDATE contract SET price = ?, updated = NULL WHERE api_req_id = ?', t)
                 if c.rowcount != 1:
                     print('failed to store price')
             else:
