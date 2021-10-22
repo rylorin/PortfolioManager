@@ -435,12 +435,31 @@ class Trader(wrapper.EWrapper, EClient):
         if r[0]:
             getRollDaysBefore = float(r[0])
         else:
-            getRollDaysBefore = 0
+            getRollDaysBefore = 1
         c.close()
         self.db.commit()
 #        print('getRollDaysBefore:', getNakedCallWinRatio)
         return getRollDaysBefore
 
+    def getCrawlDaysNumber(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            """
+            SELECT portfolio.Crawler_Days
+             FROM portfolio
+             WHERE portfolio.account = ?
+            """,
+            (accountName, ))
+        r = c.fetchone()
+        if r[0]:
+            result = float(r[0])
+        else:
+            result = 45
+        c.close()
+        self.db.commit()
+#        print('getCrawlDaysNumber:', result)
+        return result
     #
     # Other
     #
@@ -1008,26 +1027,27 @@ class Trader(wrapper.EWrapper, EClient):
     def getStockQuantityOnOrderBook(self, account: str, symbol: str, action: str):
         self.getDbConnection()
         c = self.db.cursor()
-        t = (account, symbol, 'STK', action, 'Submitted', 'PreSubmitted', )
         c.execute(
-            'SELECT SUM(remaining_qty) '\
-            'FROM open_order, portfolio, contract ' \
-            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND open_order.contract_id = contract.id AND contract.symbol = ? AND contract.secType = ? ' \
-            ' AND open_order.action_type = ?' \
-            ' AND open_order.status IN (?, ?)',
-            t)
+            """
+            SELECT SUM(remaining_qty)
+            FROM open_order, portfolio, contract 
+            WHERE open_order.account_id = portfolio.id AND portfolio.account = ? 
+             AND open_order.contract_id = contract.id AND contract.symbol = ? AND contract.secType = ? 
+             AND open_order.action_type = ?
+             AND open_order.status IN ('Submitted', 'PreSubmitted')
+             """,
+            (account, symbol, 'STK', action, ))
         r = c.fetchone()
         if r[0]:
             if action == 'BUY':
-                getStockQuantityOnOrderBook = float(r[0])
+                result = float(r[0])
             elif action == 'SELL':
-                getStockQuantityOnOrderBook = -float(r[0])
+                result = -float(r[0])
         else:
-            getStockQuantityOnOrderBook = 0
+            result = 0
         c.close()
-        #print('getStockQuantityOnOrderBook:', getStockQuantityOnOrderBook)
-        return getStockQuantityOnOrderBook
+        #print('getStockQuantityOnOrderBook:', result)
+        return result
 
     """
     Get order book information (options)
@@ -1878,18 +1898,18 @@ class Trader(wrapper.EWrapper, EClient):
                     min_price = c[7] - c[11]
                     max_price = c[8] - c[11]
 
-                    # unless we can find a high yielding one with
-                    # strike >= underlying price
-                    # delta < (1 - succes ratio)
-                    delta = (1 - self.getNakedCallWinRatio(accountName))
-                    # opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
-                    for c in opt:
-                        print(c)
-                        if (c[2] > underlying_price) and (c[9] <= delta):
-                            conId = c[0]
-                            min_price = c[7] - c[11]
-                            max_price = c[8] - c[11]
-                            break
+                    # # unless we can find a high yielding one with
+                    # # strike >= underlying price
+                    # # delta < (1 - succes ratio)
+                    # delta = (1 - self.getNakedCallWinRatio(accountName))
+                    # # opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
+                    # for c in opt:
+                    #     print(c)
+                    #     if (c[2] > underlying_price) and (c[9] <= delta):
+                    #         conId = c[0]
+                    #         min_price = c[7] - c[11]
+                    #         max_price = c[8] - c[11]
+                    #         break
 
                     # place order
                     price = round((min_price + max_price) / 2, 2)
@@ -1921,7 +1941,7 @@ class Trader(wrapper.EWrapper, EClient):
                       AND option.last_trade_date > option_ref.last_trade_date
                       AND contract_ref.ask < contract.bid
                       AND option_ref.call_or_put = option.call_or_put
-                      AND option.strike < option_ref.strike
+                      AND option.strike <= option_ref.strike
                       AND option.delta NOTNULL
                      ORDER BY option.last_trade_date ASC, option.strike ASC
                     """,
@@ -2050,7 +2070,7 @@ class Trader(wrapper.EWrapper, EClient):
         while len(self.wheelSymbolsExpirations) > 0:
             exp = self.wheelSymbolsExpirations.pop(0)
             expiration = datetime.date(int(exp[0:4]), int(exp[4:6]), int(exp[6:8]))
-            if (expiration - today).days < 65:
+            if (expiration - today).days < self.getCrawlDaysNumber(self.account):
                 break
             exp = None
         if exp != None:
