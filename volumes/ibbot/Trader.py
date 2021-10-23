@@ -727,10 +727,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND currency.base = portfolio.base_currency',
             t)
         r = c.fetchone()
-        total_cash = float(r[0])
-        # print('total cash:', total_cash)
+        result = float(r[0])
+        # print('total cash:', result)
         c.close()
-        return total_cash
+        return result
 
     def getCurrencyBalance(self, account: str, currency: str):
         self.getDbConnection()
@@ -744,10 +744,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND balance.currency = ?',
             t)
         r = c.fetchone()
-        getCurrencyBalance = float(r[0])
+        result = float(r[0])
         c.close()
-        print('getCurrencyBalance:', getCurrencyBalance)
-        return getCurrencyBalance
+        # print('getCurrencyBalance:', result)
+        return result
 
     def getBaseToCurrencyRate(self, account: str, currency: str):
         self.getDbConnection()
@@ -761,10 +761,10 @@ class Trader(wrapper.EWrapper, EClient):
             ' AND currency.currency = ?',
             t)
         r = c.fetchone()
-        getBaseToCurrencyRatio = float(r[0])
+        result = float(r[0])
         c.close()
-        # print('getBaseToCurrencyRatio:', getBaseToCurrencyRatio)
-        return getBaseToCurrencyRatio
+        # print('getBaseToCurrencyRatio:', result)
+        return result
 
     """
     Get positions information (stock)
@@ -1599,10 +1599,10 @@ class Trader(wrapper.EWrapper, EClient):
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
         benchmark_on_buy -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
-        print('benchmark_on_buy', benchmark_on_buy)
+        # print('benchmark_on_buy', benchmark_on_buy)
         benchmark_on_sale = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'SELL')
         benchmark_on_sale -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'C', 'SELL')
-        print('benchmark_on_sale', benchmark_on_sale)
+        # print('benchmark_on_sale', benchmark_on_sale)
 
         # benchmark price in base
         benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
@@ -1626,7 +1626,7 @@ class Trader(wrapper.EWrapper, EClient):
                 to_adjust = (net_cash * benchmarkBaseToCurrencyRatio) / benchmarkPrice
             else:
                 to_adjust = 0
-            print('buyable_benchmark:', to_adjust)
+            # print('buyable_benchmark:', to_adjust)
         # else:
         #     to_adjust = 0
         # print('to_adjust:', to_adjust)
