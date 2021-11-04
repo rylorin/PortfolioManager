@@ -887,12 +887,12 @@ class Trader(wrapper.EWrapper, EClient):
             t)
         r = c.fetchone()
         if r[0] != None:
-            getNakedPutAmount = float(r[0])
+            result = float(r[0])
         else:
-            getNakedPutAmount = 0
+            result = 0
         c.close()
-        # print('getNakedPutAmount:', getNakedPutAmount)
-        return getNakedPutAmount
+        print('getNakedPutAmount:', result)
+        return result
 
     def getTotalNakedPutAmount(self, account: str):
         self.getDbConnection()
@@ -913,6 +913,33 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         # print('total naked put:', naked_puts_engaged)
         return naked_puts_engaged
+
+    def getWeightedNakedOptionsAmountInBase(self, account: str, put_or_call: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            """
+            SELECT SUM(position.quantity * option.strike * option.multiplier * option.delta / currency.rate) 
+            FROM position, portfolio, contract, option, currency, contract stock 
+            WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? 
+              AND position.quantity < 0 
+              AND position.contract_id = contract.id 
+              AND contract.secType = 'OPT'
+              AND position.contract_id = option.id 
+              AND option.call_or_put = ? 
+              AND option.stock_id = stock.id 
+              AND contract.currency = currency.currency 
+              AND currency.base = portfolio.base_currency
+            """,
+            (account, put_or_call, ))
+        r = c.fetchone()
+        if r[0]:
+            result = -float(r[0])
+        else:
+            result = 0
+        c.close()
+        print('getWeightedNakedOptionsAmountInBase(', account, ',', put_or_call, '):', result)
+        return result
 
     def getItmNakedPutAmount(self, account: str):
         self.getDbConnection()
@@ -935,12 +962,12 @@ class Trader(wrapper.EWrapper, EClient):
             , t)
         r = c.fetchone()
         if r[0]:
-            getItmNakedPutAmount = float(r[0])
+            result = float(r[0])
         else:
-            getItmNakedPutAmount = 0
+            result = 0
         c.close()
-        # print('getItmNakedPutAmount:', getItmNakedPutAmount)
-        return getItmNakedPutAmount
+        # print('getItmNakedPutAmount:', result)
+        return result
 
     # Very similar to the previous one.
     # only 'P' => 'C'
@@ -1588,13 +1615,12 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, benchmarkSymbol)
 
         # how much cash do we have?
-        total_cash = self.getTotalCashAmount(self.account)
+        net_cash = self.getTotalCashAmount(self.account)
 
-        # how much do we need to cover ALL short puts?
-        # naked_puts_engaged = self.getTotalNakedPutAmount(self.account)
-
-        # how much do we need to cover ITM short?
-        naked_puts_amount = self.getItmNakedPutAmount(self.account) # no, because maybe not the same maturity + self.getItmShortCallsAmount(self.account)
+        # how much do we need to cover short put?
+        net_cash += self.getWeightedNakedOptionsAmountInBase(self.account, 'P')
+        # how much could we get from short call?
+        net_cash += self.getWeightedNakedOptionsAmountInBase(self.account, 'C')
 
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
@@ -1608,10 +1634,8 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
-        net_cash = total_cash + naked_puts_amount
-        net_cash = benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio
+        # net_cash = benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio
         print('net_cash:', net_cash)
-
         if net_cash < 0:
             to_adjust = net_cash / benchmarkPriceInBase
             max_stocks = self.getPortfolioStocksQuantity(self.account, benchmarkSymbol)
@@ -1619,7 +1643,7 @@ class Trader(wrapper.EWrapper, EClient):
                 to_adjust = -max_stocks
             print('sellable_benchmark:', -to_adjust)
         else:
-            net_cash += self.getNakedPutAmount(self.account, benchmarkSymbol)
+            # net_cash += self.getNakedPutAmount(self.account, benchmarkSymbol)
             net_cash = min(net_cash, benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio)
             print('adjusted net_cash:', net_cash, 'benchmark balance in base:', benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio)
             if net_cash > 0:
