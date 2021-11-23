@@ -1672,13 +1672,29 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkCurrency = benchmark.currency
         benchmarkPrice = self.getSymbolPrice(benchmarkSymbol)
         benchmarkPriceInBase = self.getSymbolPriceInBase(self.account, benchmarkSymbol)
+        benchmarkUnits = self.getPortfolioStocksQuantity(self.account, benchmarkSymbol)
+        benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
+        benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
+        benchmarkBalance = benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio
 
-        # how much cash do we have?
-        net_cash = self.getTotalCashAmount(self.account)
+        # how much cover do we have?
+        # active_cover = self.getTotalCashAmount(self.account)
+        # active_cover += benchmarkPriceInBase * benchmarkUnits
+
+        required_cash = 0
         # how much do we need to cover short put?
-        net_cash += self.getWeightedNakedOptionsAmountInBase(self.account, 'P')
+        required_cash -= self.getWeightedNakedOptionsAmountInBase(self.account, 'P')
         # how much could we get from short call?
-        net_cash += self.getWeightedNakedOptionsAmountInBase(self.account, 'C')
+        required_cash -= self.getWeightedNakedOptionsAmountInBase(self.account, 'C')
+
+        if required_cash < self.getTotalCashAmount(self.account):
+            # all good
+            to_sell = 0
+            to_buy = math.floor(max(active_cover - required_cover, benchmarkBalance) / benchmarkPriceInBase)
+        else:
+            # we should sell something
+            to_sell = max(math.floor((required_cover - active_cover) / benchmarkPriceInBase), benchmarkUnits)
+            to_buy = 0
 
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
@@ -1688,37 +1704,11 @@ class Trader(wrapper.EWrapper, EClient):
         benchmark_on_sale -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'C', 'SELL')
         # print('benchmark_on_sale', benchmark_on_sale)
 
-        # benchmark price in base
-        benchmarkCurrencyBalance = self.getCurrencyBalance(self.account, benchmarkCurrency)
-        benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
-
-        # net_cash = benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio
-        print('net_cash:', net_cash)
-        if net_cash < 0:
-            to_adjust = net_cash / benchmarkPriceInBase
-            max_stocks = self.getPortfolioStocksQuantity(self.account, benchmarkSymbol)
-            if (-to_adjust > max_stocks):
-                to_adjust = -max_stocks
-            print('sellable_benchmark:', -to_adjust)
-        else:
-            # net_cash += self.getNakedPutAmount(self.account, benchmarkSymbol)
-            net_cash = min(net_cash, benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio)
-            print('adjusted net_cash:', net_cash, 'benchmark balance in base:', benchmarkCurrencyBalance / benchmarkBaseToCurrencyRatio)
-            if net_cash > 0:
-                to_adjust = (net_cash * benchmarkBaseToCurrencyRatio) / benchmarkPrice
-            else:
-                to_adjust = 0
-            # print('buyable_benchmark:', to_adjust)
-        # else:
-        #     to_adjust = 0
-        # print('to_adjust:', to_adjust)
-        to_adjust = math.floor(to_adjust)
-        print('adjusted to_adjust:', to_adjust)
-        if (to_adjust != (benchmark_on_buy + benchmark_on_sale)):
+        if (to_buy - to_sell) != (benchmark_on_buy + benchmark_on_sale):
             # adjustement order required
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'BUY')
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
-            to_adjust += self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
+            to_adjust = to_buy - to_sell + self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
             if (to_adjust >= 2): # don't buy less than 2 units
                 print('to buy:', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
