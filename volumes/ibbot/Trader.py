@@ -68,9 +68,9 @@ class Trader(wrapper.EWrapper, EClient):
         self.lastWheelRequestTime = None
         self.wheelSymbolsToProcess = []
         self.wheelSymbolsProcessingSymbol = None
-        self.wheelSymbolsProcessingStrikes = None
+        self.wheelSymbolsProcessingStrikes = []
         self.wheelSymbolsProcessingExpiration = None
-        self.wheelSymbolsExpirations = None
+        self.wheelSymbolsExpirations = []
         self.wheelSymbolsProcessed = []
         self.optionContractsAvailable = False
     
@@ -177,12 +177,11 @@ class Trader(wrapper.EWrapper, EClient):
     def getBenchmark(self, accountName: str):
         self.getDbConnection()
         c = self.db.cursor()
-        t = (accountName, )
         c.execute(
             'SELECT contract.con_id, contract.currency, contract.secType, contract.symbol, contract.exchange '
             ' FROM contract, portfolio '
             ' WHERE portfolio.account = ?'
-            '  AND contract.id = portfolio.benchmark_id', t)
+            '  AND contract.id = portfolio.benchmark_id', (accountName, ))
         r = c.fetchone()
         getBenchmark = Contract()
         getBenchmark.exchange = 'SMART'
@@ -1319,15 +1318,18 @@ class Trader(wrapper.EWrapper, EClient):
                                           expirations: SetOfString, strikes: SetOfFloat):
         super().securityDefinitionOptionParameter(reqId, exchange,
                                                 underlyingConId, tradingClass, multiplier, expirations, strikes)
-        # contract = self.findContractById(self.wheelSymbolsProcessingSymbol)
-        if self.wheelSymbolsExpirations:
-            self.wheelSymbolsExpirations = self.wheelSymbolsExpirations.union(expirations)
+        contract = self.findContractById(self.wheelSymbolsProcessingSymbol)
+        if contract.symbol == tradingClass:
+            if self.wheelSymbolsExpirations:
+                self.wheelSymbolsExpirations = self.wheelSymbolsExpirations.union(expirations)
+            else:
+                self.wheelSymbolsExpirations = expirations
+            if self.wheelSymbolsProcessingStrikes:
+                self.wheelSymbolsProcessingStrikes = self.wheelSymbolsProcessingStrikes.union(strikes)
+            else:
+                self.wheelSymbolsProcessingStrikes = strikes
         else:
-            self.wheelSymbolsExpirations = expirations
-        if self.wheelSymbolsProcessingStrikes:
-            self.wheelSymbolsProcessingStrikes = self.wheelSymbolsProcessingStrikes.union(strikes)
-        else:
-            self.wheelSymbolsProcessingStrikes = strikes
+            print('securityDefinitionOptionParameter. unsupported tradingClass:', tradingClass,'was expecting:', contract.symbol)
         # if (exchange == "SMART") or ((not self.wheelSymbolsExpirations) and (tradingClass == contract.symbol)):
         #     self.wheelSymbolsExpirations = sorted(expirations)
         #     self.wheelSymbolsProcessingStrikes = sorted(strikes)
