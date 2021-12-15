@@ -1003,62 +1003,39 @@ class Trader(wrapper.EWrapper, EClient):
         print('getWeightedShortedOptionsAmountInBase(', account, ',', put_or_call, '):', result)
         return result
 
-    def getItmNakedPutAmount(self, account: str):
+    def getItmShortOptionsAmount(self, account: str, put_or_call: str):
         self.getDbConnection()
         c = self.db.cursor()
-        # how much do we need to cover ITM short puts?
-        t = (account, 'OPT', 'P', )
-        c.execute(
-            'SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) ' \
-            'FROM position, portfolio, contract, option, currency, contract stock ' \
-            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND position.quantity < 0 ' \
-            ' AND position.contract_id = contract.id ' \
-            ' AND contract.secType = ? ' \
-            ' AND position.contract_id = option.id ' \
-            ' AND option.call_or_put = ? ' \
-            ' AND option.stock_id = stock.id ' \
-            ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency' \
-            ' AND stock.price < option.strike '
-            , t)
+        sql = """
+            SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) 
+            FROM position, portfolio, contract, option, currency, contract stock 
+            WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? 
+             AND position.quantity < 0 
+             AND position.contract_id = contract.id 
+             AND contract.secType = 'OPT'
+             AND position.contract_id = option.id 
+             AND option.call_or_put = ? 
+             AND option.stock_id = stock.id 
+             AND contract.currency = currency.currency 
+             AND currency.base = portfolio.base_currency
+            """
+        if put_or_call == 'C':
+            sql += 'AND stock.price > option.strike'
+        elif put_or_call == 'P':
+            sql += 'AND stock.price < option.strike'
+        c.execute(sql, (account, put_or_call, ))
         r = c.fetchone()
-        if r[0]:
+        c.close()
+        if not r[0]:
+            result = 0
+        elif put_or_call == 'P':
             result = float(r[0])
+        elif put_or_call == 'C':
+            result = -float(r[0])
         else:
             result = 0
-        c.close()
-        # print('getItmNakedPutAmount:', result)
+        print('getItmShortOptionsAmount(', account, ',', put_or_call, '):', result)
         return result
-
-    # Very similar to the previous one.
-    # only 'P' => 'C'
-    # stock.price < option.strike => >
-    # and negated the result
-    def getItmShortCallsAmount(self, account: str):
-        self.getDbConnection()
-        c = self.db.cursor()
-        # how much do we need to cover ITM short puts?
-        t = (account, 'OPT', 'C', )
-        c.execute(
-            'SELECT SUM(position.quantity * option.strike * option.multiplier / currency.rate) ' \
-            'FROM position, portfolio, contract, option, currency, contract stock ' \
-            'WHERE position.portfolio_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND position.quantity < 0 ' \
-            ' AND position.contract_id = contract.id ' \
-            ' AND contract.secType = ? ' \
-            ' AND position.contract_id = option.id ' \
-            ' AND option.call_or_put = ? ' \
-            ' AND option.stock_id = stock.id ' \
-            ' AND contract.currency = currency.currency ' \
-            ' AND currency.base = portfolio.base_currency' \
-            ' AND stock.price > option.strike '
-            , t)
-        r = c.fetchone()
-        getItmShortCallsAmount = -float(r[0])
-        c.close()
-        # print('getItmShortCallsAmount:', getItmShortCallsAmount)
-        return getItmShortCallsAmount
 
     """
     order book operations
@@ -1688,7 +1665,7 @@ class Trader(wrapper.EWrapper, EClient):
     """
 
     def adjustCash(self):
-        if (not self.portfolioLoaded) or (not self.ordersLoaded):
+        if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable):
             return
         sleep = self.getAdjustCashSleep(self.account)
         seconds = time.time()
@@ -1706,33 +1683,31 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkBalance = self.getCurrencyBalanceInBase(self.account, benchmarkCurrency)
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
-        # how much cover do we have?
-        # active_cover = self.getTotalCashAmount(self.account)
-        # active_cover += benchmarkPriceInBase * benchmarkUnits
-
-        required_cash = 0
+        required_cover = 0
         # how much do we need to cover short put?
-        required_cash -= self.getWeightedShortedOptionsAmountInBase(self.account, 'P')
+        required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'P')
         # how much could we get from short call?
-        required_cash -= self.getWeightedShortedOptionsAmountInBase(self.account, 'C')
+        required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'C')
         # *optionnal* if we don't want to have a big call position pulling our cash balance negative
-        required_cash = max(required_cash, 0)
-        print('required_cash:', required_cash)
-        
-        # return
-        if required_cash < self.getTotalCashAmount(self.account):
-            # all good
-            x = self.getTotalCashAmount(self.account) - required_cash
-            x = min(x, benchmarkBalance)
+        required_cover = max(required_cover, 0)
+
+        # cash amount that can be invested in benchmark
+        extra_cash = self.getTotalCashAmount(self.account) - required_cover
+
+        print('required_cover:', required_cover, 'extra_cash:', extra_cash)        
+        if extra_cash > benchmarkPriceInBase:
+            # all good, our cash is higher than the cover needed for short options
+            # we can invest some cash, but no more than benchmark balance
+            x = min(extra_cash, benchmarkBalance)
             to_sell = 0
             to_buy = math.floor(x / benchmarkPriceInBase)
+        elif extra_cash < 0:
+            # we should sell something, but no more than available benchmark units
+            x = math.ceil(-extra_cash / benchmarkPriceInBase)
+            to_sell = min(x, benchmarkUnits)
+            to_buy = 0
         else:
-            # we should sell something
-            # how much we should sell
-            x = -required_cash - self.getTotalCashAmount(self.account)
-            # limit to benchmark amount
-            x = min(x, benchmarkBalance)
-            to_sell = math.floor(x / benchmarkPriceInBase)
+            to_sell = 0
             to_buy = 0
 
         # open orders quantity
