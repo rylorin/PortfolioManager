@@ -88,7 +88,7 @@ class Trader(wrapper.EWrapper, EClient):
 
     def getDbConnection(self):
         if self.db == None:
-            self.db = sqlite3.connect('../db/var/db/data.db')
+            self.db = sqlite3.connect('../db/var/db/data.db', 15)
         return self.db
 
     @printWhenExecuting
@@ -1485,8 +1485,8 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute('UPDATE stock SET industry = ?, category = ?, subcategory = ? WHERE id = (SELECT id FROM contract WHERE contract.con_id = ?)', t)
             nextReqId = self.getNextTickerId()
             c.execute(
-                'UPDATE contract SET api_req_id = ?, name = ? WHERE contract.con_id = ?',
-                (nextReqId, contractDetails.longName, contractDetails.contract.conId, ))
+                'UPDATE contract SET api_req_id = ?, name = ?, tick_price = ? WHERE contract.con_id = ?',
+                (nextReqId, contractDetails.longName, contractDetails.minTick, contractDetails.contract.conId, ))
             if c.rowcount != 1:
                 print('contractDetails. Contract not found:', contractDetails.contract, c.rowcount, 'row(s)')
             else:
@@ -1507,8 +1507,8 @@ class Trader(wrapper.EWrapper, EClient):
             self.getDbConnection()
             c = self.db.cursor()
             c.execute(
-                'UPDATE contract SET api_req_id = ? WHERE contract.con_id = ?', 
-                (nextReqId, contractDetails.contract.conId, ))
+                'UPDATE contract SET api_req_id = ?, tick_price = ? WHERE contract.con_id = ?', 
+                (nextReqId, contractDetails.minTick, contractDetails.contract.conId, ))
             if c.rowcount != 1:
                 print('contractDetails. Contract not found:', contractDetails.contract, c.rowcount, 'row(s)')
             else:
@@ -1701,7 +1701,7 @@ class Trader(wrapper.EWrapper, EClient):
             x = min(extra_cash, benchmarkBalance)
             to_sell = 0
             to_buy = math.floor(x / benchmarkPriceInBase)
-        elif extra_cash < 0:
+        elif extra_cash < -benchmarkPriceInBase:
             # we should sell something, but no more than available benchmark units
             x = math.ceil(-extra_cash / benchmarkPriceInBase)
             to_sell = min(x, benchmarkUnits)
