@@ -88,7 +88,7 @@ class Trader(wrapper.EWrapper, EClient):
 
     def getDbConnection(self):
         if self.db == None:
-            self.db = sqlite3.connect('../db/var/db/data.db', 15)
+            self.db = sqlite3.connect('../db/var/db/data.db', 25)
         return self.db
 
     @printWhenExecuting
@@ -1570,8 +1570,12 @@ class Trader(wrapper.EWrapper, EClient):
                 and (time.time() > (self.lastWheelRequestTime + 30)):
                     self.clearAllApiReqId()
                     if self.wheelSymbolsExpirations and (len(self.wheelSymbolsExpirations) > 0):
-                        # symbol in process and no activity for more than 30 secs, we are stuck, so restart with last expiration
-                        self.processCurrentOptionExpiration()
+                        # symbol in process and no activity for more than 30 secs, we are stuck
+                        if self.wheelSymbolsProcessingExpiration:
+                            #  so restart with last expiration
+                            self.processCurrentOptionExpiration()
+                        else:
+                            self.processNextOptionExpiration()
                     else:
                         # This should not happen, but once we got wheelSymbolsProcessingStrikes clear, don't know how
                         self.selectNextSymbol()
@@ -1723,7 +1727,7 @@ class Trader(wrapper.EWrapper, EClient):
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'BUY')
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
             to_adjust = to_buy - to_sell + self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
-            if (to_adjust >= 2): # don't buy less than 2 units
+            if (to_adjust > 0):
                 print('to buy:', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
             elif (to_adjust < 0):
@@ -1761,22 +1765,23 @@ class Trader(wrapper.EWrapper, EClient):
             t = ('P', puttable_amount/100, -(1 - self.getNakedPutWinRatio(self.account)), self.getMinPremium(self.account), )
             self.getDbConnection()
             c = self.db.cursor()
-            c.execute(
-                'SELECT contract.con_id, '
-                '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
-                '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
-                '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
-                ' FROM contract, option, stock, contract stock_contract'
-                ' WHERE option.id = contract.id'
-                '  AND stock.id = option.stock_id'
-                '  AND stock_contract.id = stock.id'
-                '  AND option.call_or_put = ? '
-                '  AND option.implied_volatility > stock.historical_volatility'
-                '  AND option.strike < stock_contract.price'
-                '  AND option.strike < ?'
-                '  AND option.delta >= ?'
-                '  AND contract.bid >= ?',
-                t)
+            c.execute("""
+                SELECT contract.con_id,
+                  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
+                  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
+                  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta
+                FROM contract, option, stock, contract stock_contract
+                WHERE option.id = contract.id
+                  AND stock.id = option.stock_id
+                  AND stock_contract.id = stock.id
+                  AND option.call_or_put = ?
+                  AND option.implied_volatility > stock.historical_volatility
+                  AND option.strike < stock_contract.price
+                  AND option.strike < ?
+                  AND option.delta >= ?
+                  AND contract.bid >= ?
+                  AND stock_contract.price < stock_contract.previous_close_price
+                """, t)
             opt = c.fetchall()
             c.close()
             print(len(opt), 'contracts')
