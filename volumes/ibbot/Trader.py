@@ -88,7 +88,7 @@ class Trader(wrapper.EWrapper, EClient):
 
     def getDbConnection(self):
         if self.db == None:
-            self.db = sqlite3.connect('../db/var/db/data.db', 25)
+            self.db = sqlite3.connect('../db/var/db/data.db', 70)
         return self.db
 
     @printWhenExecuting
@@ -398,7 +398,7 @@ class Trader(wrapper.EWrapper, EClient):
 #        print('getNakedPutWinRatio:', getNakedPutWinRatio)
         return getNakedPutWinRatio
 
-    def getNakedCallWinRatio(self, accountName: str):
+    def getShortCallWinRatio(self, accountName: str):
         self.getDbConnection()
         c = self.db.cursor()
         t = (accountName, )
@@ -409,13 +409,13 @@ class Trader(wrapper.EWrapper, EClient):
             , t)
         r = c.fetchone()
         if r[0]:
-            getNakedCallWinRatio = float(r[0])
+            result = float(r[0])
         else:
-            getNakedCallWinRatio = 0
+            result = 0
         c.close()
         self.db.commit()
-#        print('getNakedCallWinRatio:', getNakedCallWinRatio)
-        return getNakedCallWinRatio
+#        print('getShortCallWinRatio:', result)
+        return result
 
     def getRollDaysBefore(self, accountName: str):
         self.getDbConnection()
@@ -433,7 +433,7 @@ class Trader(wrapper.EWrapper, EClient):
             getRollDaysBefore = 1
         c.close()
         self.db.commit()
-#        print('getRollDaysBefore:', getNakedCallWinRatio)
+#        print('getRollDaysBefore:', result)
         return getRollDaysBefore
 
     def getCrawlDaysNumber(self, accountName: str):
@@ -1235,7 +1235,6 @@ class Trader(wrapper.EWrapper, EClient):
                 print('tickPrice. unexpected type:', tickType, 'for reqId:', reqId)
             c.close()
             self.db.commit()
-        # self.checkmyid('tickPrice', 'after')
     # ! [tickprice]
 
     @iswrapper
@@ -1768,7 +1767,7 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute("""
                 SELECT contract.con_id,
                   stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
-                  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
+                  julianday(option.last_trade_date) - julianday('now') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
                   contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta
                 FROM contract, option, stock, contract stock_contract
                 WHERE option.id = contract.id
@@ -1856,25 +1855,26 @@ class Trader(wrapper.EWrapper, EClient):
                 #   at least 85% success (delta <= 0.15)
                 #   premium at least $0.25
                 #   underlying stock is current stock
-                t = ('C', averageCost, (1 - self.getNakedCallWinRatio(self.account)), self.getMinPremium(self.account), contract.conId, )
+                t = ('C', averageCost, (1 - self.getShortCallWinRatio(self.account)), self.getMinPremium(self.account), contract.conId, )
                 self.getDbConnection()
                 c = self.db.cursor()
-                c.execute(
-                    'SELECT contract.con_id, '
-                    '  stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol, '
-                    '  julianday(option.last_trade_date) - julianday(\'now\') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday(\'now\') + 1) * 360, '
-                    '  contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta '
-                    ' FROM contract, option, stock, contract stock_contract'
-                    ' WHERE option.id = contract.id'
-                    '  AND stock.id = option.stock_id'
-                    '  AND stock_contract.id = stock.id'
-                    '  AND option.call_or_put = ? '
-                    '  AND option.strike > stock_contract.price'
-                    '  AND option.strike > ?'
-                    '  AND option.delta <= ?'
-                    '  AND contract.bid >= ?'
-                    '  AND stock_contract.con_id = ?'
-                    , t)
+                c.execute("""
+                    SELECT contract.con_id,
+                      stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
+                      julianday(option.last_trade_date) - julianday('now') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
+                      contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta
+                     FROM contract, option, stock, contract stock_contract
+                     WHERE option.id = contract.id
+                      AND stock.id = option.stock_id
+                      AND stock_contract.id = stock.id
+                      AND option.call_or_put = ?
+                      AND option.strike > stock_contract.price
+                      AND option.strike > ?
+                      AND option.delta <= ?
+                      AND contract.bid >= ?
+                      AND stock_contract.con_id = ?
+                      AND stock_contract.price > stock_contract.previous_close_price
+                    """, t)
                 # sort by annualized yield descending
                 opt = sorted(c.fetchall(), key=cmp_to_key(lambda item1, item2: item2[7] - item1[7]))
                 c.close()
@@ -2011,7 +2011,7 @@ class Trader(wrapper.EWrapper, EClient):
                     # # unless we can find a high yielding one with
                     # # strike >= underlying price
                     # # delta < (1 - succes ratio)
-                    # delta = (1 - self.getNakedCallWinRatio(accountName))
+                    # delta = (1 - self.getShortCallWinRatio(accountName))
                     # # opt = sorted(opt, key=cmp_to_key(lambda item1, item2: item1[6] - item2[6]))
                     # for c in opt:
                     #     print(c)
