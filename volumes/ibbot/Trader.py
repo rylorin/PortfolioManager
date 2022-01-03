@@ -1658,7 +1658,7 @@ class Trader(wrapper.EWrapper, EClient):
             if (contract.secType == 'STK'):
                 self.sellCoveredCallsIfPossible(contract, position, marketPrice, marketValue,
                     averageCost, unrealizedPNL, realizedPNL, accountName)
-            elif (contract.secType == 'OPT'):
+            elif (contract.secType == 'OPT') and contract.lastTradeDateOrContractMonth:
                 self.rollOptionIfNeeded(contract, position, marketPrice, marketValue,
                     averageCost, unrealizedPNL, realizedPNL, accountName)
     # ! [updateportfolio]
