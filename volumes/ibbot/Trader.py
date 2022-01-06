@@ -560,6 +560,33 @@ class Trader(wrapper.EWrapper, EClient):
             (id, )
         )
         r = c.fetchone()
+        if r:
+            result = Contract()
+            if r[0]:
+                result.conId = r[0]
+            result.currency = r[1]
+            result.secType = r[2]
+            result.symbol = r[3]
+            result.exchange = 'SMART'
+            result.primaryExchange = r[4]
+        else:
+            result = None
+        c.close()
+        # print('findContractById:', result)
+        return result
+
+    def findContractByConId(self, id: int):
+        self.getDbConnection()
+        c = self.db.cursor()
+        c.execute(
+            """
+            SELECT contract.con_id, contract.currency, contract.secType, contract.symbol, contract.exchange
+             FROM contract
+             WHERE contract.con_id = ?
+            """,
+            (id, )
+        )
+        r = c.fetchone()
         result = Contract()
         if r[0]:
             result.conId = r[0]
@@ -1951,11 +1978,12 @@ class Trader(wrapper.EWrapper, EClient):
         # now = datetime.datetime.now().timestamp()
         hours = (expiration - seconds) / 3600
         # print(expiration, now, hours)
-        id = self.findOrCreateContract(contract)
         if (not self.ordersLoaded) \
-            or (not id in self.wheelSymbolsProcessed) \
             or (not position) or (hours > (24 * self.getRollDaysBefore(accountName))) \
             or (seconds < (self.lastRollOptionTime[contract.conId] + self.getRollOptionsSleep(accountName))):
+            return
+        id = self.findOrCreateContract(self.findContractBySymbol(contract.symbol))
+        if (not id in self.wheelSymbolsProcessed):
             return
         self.lastRollOptionTime[contract.conId] = seconds
         position += self.getContractQuantityOnOrderBook(accountName, contract, 'BUY')
