@@ -20,27 +20,26 @@ class TraderOrder:
 	#/ order) you are willing to accept. Requires TWS 975+. Smart-routing to US stocks only.
     </summary>"""
     @staticmethod
-    def Midprice(action:str, quantity:float, priceCap:float):
+    def Midprice(action: str, quantity: float, priceCap: float):
         #! [midprice]
         order = TraderOrder.Order()
         order.action = action
         order.orderType = "MIDPRICE"
         order.totalQuantity = quantity
-        order.lmtPrice = priceCap # optional
+        if priceCap:
+            order.lmtPrice = priceCap # optional
         #! [midprice]
         return order
 
     @staticmethod
     def BuyBenchmark(quantity: int):
-        order = TraderOrder.Midprice("BUY", quantity, 100)
-        # always true because of price cap that will prevent execution
+        order = TraderOrder.Midprice("BUY", quantity, None)
         order.transmit = True
         return order
 
     @staticmethod
     def SellBenchmark(quantity: int):
-        order = TraderOrder.Midprice("SELL", quantity, 120)
-        # always true because of price cap that will prevent execution
+        order = TraderOrder.Midprice("SELL", quantity, None)
         order.transmit = True
         return order
 
@@ -50,8 +49,7 @@ class TraderOrder:
         order.action = 'SELL'
         order.orderType = "LMT"
         order.totalQuantity = 1
-        order.lmtPrice = priceCap + 10 # Test
-        # always true because of price cap that will prevent execution
+        order.lmtPrice = priceCap
         order.transmit = True
         return order
 
