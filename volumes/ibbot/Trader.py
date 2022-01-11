@@ -1910,9 +1910,9 @@ class Trader(wrapper.EWrapper, EClient):
 #                    for rec in opt:
 #                        print(rec)
                     rec = opt[0]
-                    askprice = round(rec[9], 2)
                     bidprice = round(rec[8], 2)
-                    midprice = round((rec[8] + rec[9]) / 2, 2)
+                    askprice = round(rec[9], 2)
+                    midprice = round((bidprice + askprice) / 2, 2)
                     print(
                         'Placing order for', rec[5],
                         'of delta', round(rec[13], 2),
@@ -1935,7 +1935,7 @@ class Trader(wrapper.EWrapper, EClient):
                     contract.right = rec[4]
                     contract.multiplier = "100"
                     # print(price)
-                    self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellCoveredCall(midprice, math.floor(net_pos/100)))
+                    self.placeOrder(self.nextOrderId(), contract, TraderOrder.SellCoveredCall(askprice, math.floor(net_pos/100)))
         # print('sellCoveredCallsIfPossible done.')
 
     @staticmethod
