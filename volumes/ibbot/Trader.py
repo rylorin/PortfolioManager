@@ -1975,11 +1975,9 @@ class Trader(wrapper.EWrapper, EClient):
             self.lastRollOptionTime[contract.conId] = 0
         seconds = time.time()
         expiration = datetime.datetime.strptime(contract.lastTradeDateOrContractMonth, '%Y%m%d').timestamp()
-        # now = datetime.datetime.now().timestamp()
         hours = (expiration - seconds) / 3600
-        # print(expiration, now, hours)
         if (not self.ordersLoaded) \
-            or (not position) or (hours > (24 * self.getRollDaysBefore(accountName))) \
+            or (not position) or (hours > ((24 * self.getRollDaysBefore(accountName)) - 12)) \
             or (seconds < (self.lastRollOptionTime[contract.conId] + self.getRollOptionsSleep(accountName))):
             return
         id = self.findOrCreateContract(self.findContractBySymbol(contract.symbol))
