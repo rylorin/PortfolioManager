@@ -1234,7 +1234,6 @@ class Trader(wrapper.EWrapper, EClient):
     # reqMktData callback
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float, attrib: TickAttrib):
 #        print("TickPrice. TickerId:", reqId, "tickType:", tickType, "Price:", price, "CanAutoExecute:", attrib.canAutoExecute, "PastLimit:", attrib.pastLimit, "PreOpen:", attrib.preOpen)
-        # self.checkmyid('tickPrice', 'before')
         super().tickPrice(reqId, tickType, price, attrib)
         if price >= 0:
             self.getDbConnection()
@@ -1275,7 +1274,7 @@ class Trader(wrapper.EWrapper, EClient):
         self.getDbConnection()
         c = self.db.cursor()
         if tickType == TickTypeEnum.MODEL_OPTION: # 13
-# à priori ça n'est pas le prix mais peut-être le prix théorique
+# what is optPrice in this case?
 #            c.execute('UPDATE contract SET price = ?, updated = datetime(\'now\') WHERE id = (SELECT id from option WHERE api_req_id = ?)', t)
             if impliedVol:
                 impliedVol = round(impliedVol, 3)
@@ -1611,7 +1610,7 @@ class Trader(wrapper.EWrapper, EClient):
                     # no process in progress, start over
                     self.selectNextSymbol()
             # perform regular tasks
-            self.sellNakedPuts()
+            self.sellShortPutsIfPossible()
             self.adjustCash()
     # ! [updateaccounttime]
 
@@ -1724,14 +1723,14 @@ class Trader(wrapper.EWrapper, EClient):
         # cash amount that can be invested in benchmark
         extra_cash = self.getTotalCashAmount(self.account) - required_cover
 
-        print('required_cover:', required_cover, 'extra_cash:', extra_cash)        
-        if extra_cash > benchmarkPriceInBase:
+        # print('required_cover:', required_cover, 'extra_cash:', extra_cash)
+        if extra_cash > (benchmarkPriceInBase * 10):
             # all good, our cash is higher than the cover needed for short options
             # we can invest some cash, but no more than benchmark balance
             x = min(extra_cash, benchmarkBalance)
             to_sell = 0
             to_buy = math.floor(x / benchmarkPriceInBase)
-        elif extra_cash < -benchmarkPriceInBase:
+        elif extra_cash < -(benchmarkPriceInBase * 2):
             # we should sell something, but no more than available benchmark units
             x = math.ceil(-extra_cash / benchmarkPriceInBase)
             to_sell = min(x, benchmarkUnits)
@@ -1760,7 +1759,7 @@ class Trader(wrapper.EWrapper, EClient):
                 print('to sell:', -to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
-    def sellNakedPuts(self):
+    def sellShortPutsIfPossible(self):
         if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable):
             return
         sleep = self.getNakedPutSleep(self.account)
@@ -1794,7 +1793,7 @@ class Trader(wrapper.EWrapper, EClient):
             c.execute("""
                 SELECT contract.con_id,
                   stock_contract.symbol, option.last_trade_date, option.strike, option.call_or_put, contract.symbol,
-                  julianday(option.last_trade_date) - julianday('now') + 1, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
+                  (julianday(option.last_trade_date) - julianday('now') + 1) dte, contract.bid / option.strike / (julianday(option.last_trade_date) - julianday('now') + 1) * 360,
                   contract.bid, contract.ask, stock_contract.price, option.implied_volatility, stock.historical_volatility, option.delta
                 FROM contract, option, stock, contract stock_contract
                 WHERE option.id = contract.id
@@ -1807,6 +1806,7 @@ class Trader(wrapper.EWrapper, EClient):
                   AND option.delta >= ?
                   AND contract.bid >= ?
                   AND stock_contract.price < stock_contract.previous_close_price
+                  AND julianday(option.last_trade_date) > julianday('now')
                 """, t)
             opt = c.fetchall()
             c.close()
@@ -2088,13 +2088,11 @@ class Trader(wrapper.EWrapper, EClient):
                 print(len(opt), 'possible contracts, by delta:')
                 for c in opt:
                     print(c)
-                for i in range(len(opt)):
-                    pass
                 if (len(opt) >= 1):
-                    min_price = opt[0][7] - opt[0][11]
-                    max_price = opt[0][8] - opt[0][10]
+                    min_price = round(opt[0][7] - opt[0][11], 2)
+                    max_price = round(opt[0][8] - opt[0][10], 2)
                     price = round((min_price + max_price) / 2, 2)
-                    # print(opt[0], (opt[0][7] + opt[0][11]) / 2)
+                    # print('min_price', min_price, 'price', price, 'max_price', max_price)
                     self.placeOrder(self.nextOrderId(),
                         self.OptionComboContract(contract.symbol, opt[0][0], contract.conId),
                         TraderOrder.ComboLimitOrder("SELL", -position, price, False))
