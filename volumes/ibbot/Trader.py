@@ -188,6 +188,10 @@ class Trader(wrapper.EWrapper, EClient):
             self.processNextOptionExpiration()
         return count
 
+#
+# Trading settings
+#
+
     def getBenchmark(self, accountName: str):
         self.getDbConnection()
         c = self.db.cursor()
@@ -226,10 +230,6 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         # print('getBenchmarkAmountInBase:', getBenchmarkAmountInBase)
         return getBenchmarkAmountInBase
-
-#
-# Trading settings
-#
 
     def getWheelStocksToProcess(self):
         self.getDbConnection()
@@ -339,6 +339,22 @@ class Trader(wrapper.EWrapper, EClient):
         c.close()
         self.db.commit()
 #        print('getAdjustCashSleep:', result)
+        return result
+
+    def getCashStrategy(self, accountName: str):
+        self.getDbConnection()
+        c = self.db.cursor()
+        t = (accountName, )
+        c.execute(
+            'SELECT portfolio.cash_strategy'
+            ' FROM portfolio'
+            ' WHERE portfolio.account = ?'
+            , t)
+        r = c.fetchone()
+        result = int(r[0])
+        c.close()
+        self.db.commit()
+#        print('getCashStrategy:', result)
         return result
 
     def getRollOptionsSleep(self, accountName: str):
@@ -1694,7 +1710,7 @@ class Trader(wrapper.EWrapper, EClient):
     """
 
     def adjustCash(self):
-        if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable):
+        if (not self.portfolioLoaded) or (not self.ordersLoaded) or (not self.optionContractsAvailable) or (not self.getCashStrategy(self.account)):
             return
         sleep = self.getAdjustCashSleep(self.account)
         seconds = time.time()
@@ -1712,11 +1728,21 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkBalance = self.getCurrencyBalanceInBase(self.account, benchmarkCurrency)
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
+        strategy = self.getCashStrategy(self.account)
+        # init required_cover
         required_cover = 0
-        # how much do we need to cover short put?
-        required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'P')
-        # how much could we get from short call?
-        required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'C')
+        if strategy == 1:
+            print('cash strategy not implemented!!!')
+        elif strategy == 2:
+            # total Options portfolio value
+            required_cover += self.getPortfolioOptionsValue(self.account, None)
+        elif strategy == 3:
+            # how much do we need to cover short put?
+            required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'P')
+            # how much could we get from short call?
+            required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'C')
+        else:
+            print('cash strategy not implemented!!!')
         # *optionnal* if we don't want to have a big call position pulling our cash balance negative
         required_cover = max(required_cover, 0)
 
@@ -1724,13 +1750,13 @@ class Trader(wrapper.EWrapper, EClient):
         extra_cash = self.getTotalCashAmount(self.account) - required_cover
 
         # print('required_cover:', required_cover, 'extra_cash:', extra_cash)
-        if extra_cash > (benchmarkPriceInBase * 10):
+        if extra_cash > benchmarkPriceInBase:
             # all good, our cash is higher than the cover needed for short options
             # we can invest some cash, but no more than benchmark balance
             x = min(extra_cash, benchmarkBalance)
             to_sell = 0
             to_buy = math.floor(x / benchmarkPriceInBase)
-        elif extra_cash < -(benchmarkPriceInBase * 2):
+        elif extra_cash < -benchmarkPriceInBase:
             # we should sell something, but no more than available benchmark units
             x = math.ceil(-extra_cash / benchmarkPriceInBase)
             to_sell = min(x, benchmarkUnits)
@@ -1748,14 +1774,14 @@ class Trader(wrapper.EWrapper, EClient):
         # print('benchmark_on_sale', benchmark_on_sale)
 
         if (to_buy - to_sell) != (benchmark_on_buy + benchmark_on_sale):
-            # adjustement order required
+            # order required
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'BUY')
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
             to_adjust = to_buy - to_sell + self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
-            if (to_adjust > 0):
+            if (to_adjust >= 10):   # buy at least 10 unit
                 print('to buy:', to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.BuyBenchmark(to_adjust))
-            elif (to_adjust < 0):
+            elif (to_adjust <= -2): # sell at least 2 unit
                 print('to sell:', -to_adjust)
                 self.placeOrder(self.nextOrderId(), benchmark, TraderOrder.SellBenchmark(-to_adjust))
 
