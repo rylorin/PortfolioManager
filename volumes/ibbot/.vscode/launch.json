@@ -30,7 +30,7 @@
             "request": "launch",
             "program": "Program.py",
             "console": "integratedTerminal",
-            "args": [ "--host", "192.168.1.11" ],
+            "args": [ "--host", "vps183484.vps.ovh.ca", "--port", "4001" ],
             "cwd": "${workspaceFolder}"
         }
 

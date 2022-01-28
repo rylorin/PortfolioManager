@@ -1716,7 +1716,6 @@ class Trader(wrapper.EWrapper, EClient):
         seconds = time.time()
         if (seconds < (self.lastCashAdjust + sleep)):
             return
-        self.lastCashAdjust = seconds
 
         benchmark = self.getBenchmark(self.account)
         benchmarkSymbol = benchmark.symbol
@@ -1729,25 +1728,31 @@ class Trader(wrapper.EWrapper, EClient):
         benchmarkBaseToCurrencyRatio = self.getBaseToCurrencyRate(self.account, benchmarkCurrency)
 
         strategy = self.getCashStrategy(self.account)
-        # init required_cover
-        required_cover = 0
-        if strategy == 1:
-            print('cash strategy not implemented!!!')
+        if not strategy:
+            extra_cash = 0
+        elif strategy == 1:
+            extra_cash = benchmarkCurrencyBalance
         elif strategy == 2:
             # total Options portfolio value
-            required_cover += self.getPortfolioOptionsValue(self.account, None)
+            required_cover = self.getPortfolioOptionsValue(self.account, None)
+            # *optionnal* if we don't want to have a big call position pulling our cash balance negative
+            required_cover = max(required_cover, 0)
+            # cash amount that can be invested in benchmark
+            extra_cash = self.getTotalCashAmount(self.account) - required_cover
         elif strategy == 3:
+            # init required_cover
+            required_cover = 0
             # how much do we need to cover short put?
             required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'P')
             # how much could we get from short call?
             required_cover -= self.getWeightedShortedOptionsAmountInBase(self.account, 'C')
+            # *optionnal* if we don't want to have a big call position pulling our cash balance negative
+            required_cover = max(required_cover, 0)
+            # cash amount that can be invested in benchmark
+            extra_cash = self.getTotalCashAmount(self.account) - required_cover
         else:
             print('cash strategy not implemented!!!')
-        # *optionnal* if we don't want to have a big call position pulling our cash balance negative
-        required_cover = max(required_cover, 0)
-
-        # cash amount that can be invested in benchmark
-        extra_cash = self.getTotalCashAmount(self.account) - required_cover
+            extra_cash = 0
 
         # print('required_cover:', required_cover, 'extra_cash:', extra_cash)
         if extra_cash > benchmarkPriceInBase:
@@ -1768,13 +1773,12 @@ class Trader(wrapper.EWrapper, EClient):
         # open orders quantity
         benchmark_on_buy = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'BUY')
         benchmark_on_buy -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
-        # print('benchmark_on_buy', benchmark_on_buy)
         benchmark_on_sale = self.getStockQuantityOnOrderBook(self.account, benchmarkSymbol, 'SELL')
         benchmark_on_sale -= self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'C', 'SELL')
-        # print('benchmark_on_sale', benchmark_on_sale)
 
-        if (to_buy - to_sell) != (benchmark_on_buy + benchmark_on_sale):
+        if strategy and ((to_buy - to_sell) != (benchmark_on_buy + benchmark_on_sale)):
             # order required
+            self.lastCashAdjust = seconds
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'BUY')
             self.cancelStockOrderBook(self.account, benchmarkSymbol, 'SELL')
             to_adjust = to_buy - to_sell + self.getOptionsQuantityOnOrderBook(self.account, benchmarkSymbol, 'P', 'SELL')
@@ -2009,13 +2013,13 @@ class Trader(wrapper.EWrapper, EClient):
         id = self.findOrCreateContract(self.findContractBySymbol(contract.symbol))
         if (not id in self.wheelSymbolsProcessed):
             return
-        self.lastRollOptionTime[contract.conId] = seconds
         position += self.getContractQuantityOnOrderBook(accountName, contract, 'BUY')
         if (position < 0):
             # print('rollOptionIfNeeded.', 'contract:', contract, 'net position:', position)
             underlying_price = self.getUnderlyingPrice(contract)
             if (contract.right == 'C' and underlying_price > contract.strike):
                 print('need to roll ITM Call', contract)
+                self.lastRollOptionTime[contract.conId] = seconds
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
@@ -2080,6 +2084,7 @@ class Trader(wrapper.EWrapper, EClient):
                         TraderOrder.ComboLimitOrder("SELL", -position, price, False))
             elif (contract.right == 'P' and underlying_price < contract.strike):
                 print('Need to roll ITM Put', contract)
+                self.lastRollOptionTime[contract.conId] = seconds
                 # search for replacement contracts
                 # select option contracts which match:
                 #   same right (Call/Call)
