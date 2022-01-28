@@ -1,4 +1,4 @@
-# my Portfolio Manager website docker stack
+# my IB Portfolio Manager docker stack
 version: '3.7'
 
 services:
@@ -22,24 +22,44 @@ services:
           - node.role == manager
 #          - node.role == worker
       replicas: 1
-  python:
-    image: python:alpine
-    command: python3 /app/Program.py --host 91.170.7.203
-    volumes:
-      - ibbot:/app:rw
-      - db:/db:rw
-    networks:
-      - default
-      - system_dmz_network
+  ib-gateway:
+    image: waytrade/ib-gateway:1012.2c
+    environment:
+      TWS_USERID: ${TWS_USERID}
+      TWS_PASSWORD: ${TWS_PASSWORD}
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      VNC_SERVER_PASSWORD: ${VNC_SERVER_PASSWORD:-}
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:5900:5900"
     deploy:
       placement:
         constraints:
           - node.platform.os == linux
           - node.role == manager
 #          - node.role == worker
-      replicas: 1
+      replicas: 0
+  python:
+    image: python:alpine
+    command: python3 -u /app/Program.py --host ib-gateway --port 4001 --cache
+    volumes:
+      - ibbot:/app:rw
+      - db:/db:rw
+    networks:
+      - default
+      - system_dmz_network
+    depends_on:
+      - ib-gateway
+    deploy:
+      placement:
+        constraints:
+          - node.platform.os == linux
+          - node.role == manager
+#          - node.role == worker
+      replicas: 0
   web:
-    image: caddy:2.1.1-alpine
+    image: caddy:2.4.6-alpine
     volumes:
       - app:/app:ro
     networks:
