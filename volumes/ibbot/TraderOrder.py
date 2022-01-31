@@ -76,7 +76,7 @@ class TraderOrder:
         order.action = action
         order.orderType = "LMT"
         order.totalQuantity = quantity
-        order.lmtPrice = limitPrice + 10 # Test
+        order.lmtPrice = limitPrice # + 10 Test
         if nonGuaranteed:
             order.smartComboRoutingParams = []
             order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))

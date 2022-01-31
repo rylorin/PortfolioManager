@@ -1167,24 +1167,25 @@ class Trader(wrapper.EWrapper, EClient):
         c = self.db.cursor()
         t = (account, putOrCall, stock, action, 'Submitted', 'PreSubmitted', )
         c.execute(
-            'SELECT SUM(open_order.remaining_qty * option.multiplier) '\
-            'FROM open_order, portfolio, option, contract ' \
-            'WHERE open_order.account_id = portfolio.id AND portfolio.account = ? ' \
-            ' AND open_order.contract_id = option.id AND option.call_or_put = ? AND option.stock_id = contract.id AND contract.symbol = ? ' \
-            ' AND open_order.action_type = ?' \
-            ' AND open_order.status IN (?, ?)',
-            t)
+            """
+            SELECT SUM(open_order.remaining_qty * option.multiplier)
+              FROM open_order, portfolio, option, contract
+              WHERE open_order.account_id = portfolio.id AND portfolio.account = ?
+                AND open_order.contract_id = option.id AND option.call_or_put = ? AND option.stock_id = contract.id AND contract.symbol = ?
+                AND open_order.action_type = ?
+                AND open_order.status IN (?, ?)
+            """, t)
         r = c.fetchone()
         if r[0]:
             if action == 'BUY':
-                getOptionsQuantityOnOrderBook = float(r[0])
+                result = float(r[0])
             elif action == 'SELL':
-                getOptionsQuantityOnOrderBook = -float(r[0])
+                result = -float(r[0])
         else:
-            getOptionsQuantityOnOrderBook = 0
+            result = 0
         c.close()
-        #print('getOptionsQuantityOnOrderBook:', getOptionsQuantityOnOrderBook)
-        return getOptionsQuantityOnOrderBook
+        #print('getOptionsQuantityOnOrderBook:', result)
+        return result
 
     def getOptionsAmountOnOrderBook(self, account: str, stock: str, putOrCall: str, action: str):
         self.getDbConnection()
@@ -1384,7 +1385,7 @@ class Trader(wrapper.EWrapper, EClient):
         c = self.db.cursor()
         # Update OpenOrder table
         t = (orderId, )
-        c.execute('SELECT id, contract_id FROM open_order WHERE order_id = ?', t)
+        c.execute('SELECT id, contract_id, perm_id FROM open_order WHERE perm_id = ?', (order.permId, ))
         r = c.fetchone()
         if not r:
             portfolio_id = self.findPortfolio(order.account)
@@ -1413,16 +1414,16 @@ class Trader(wrapper.EWrapper, EClient):
                     t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
                     c.execute(
                         'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
-                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        t)  # better use permid
+                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', t)
             else:
                 contract_id = self.findOrCreateContract(contract)
                 if contract_id:
                     t = (portfolio_id, contract_id, order.permId, order.clientId, orderId, order.action, order.totalQuantity, order.cashQty, order.lmtPrice, order.auxPrice, orderState.status, order.totalQuantity, )
                     c.execute(
                         'INSERT INTO open_order(account_id, contract_id, perm_id, client_id, order_id, action_type, total_qty, cash_qty, lmt_price, aux_price, status, remaining_qty) ' \
-                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        t)  # better use permid
+                        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', t)
+        else:
+            print('order already exists', order, contract)
         c.close()
         self.db.commit()
     # ! [openorder]
@@ -1444,10 +1445,11 @@ class Trader(wrapper.EWrapper, EClient):
         self.getDbConnection()
         c = self.db.cursor()
         if status == 'Submitted' or status == 'PreSubmitted':
-            t = (status, remaining, orderId, )
-            c.execute('UPDATE open_order SET status = ?, remaining_qty = ? WHERE order_id = ?', t)  # better use permid
+            c.execute(
+                'UPDATE open_order SET status = ?, remaining_qty = ? WHERE perm_id = ?',
+                (status, remaining, permId, ))
         elif status == 'Cancelled' or status == 'Filled':
-            c.execute('DELETE FROM open_order WHERE order_id = ?', (orderId, ))  # better use permid
+            c.execute('DELETE FROM open_order WHERE perm_id = ?', (permId, ))
         else:
             print('orderStatus. unknow status', status)
         c.close()
