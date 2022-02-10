@@ -1,5 +1,7 @@
 volumes/app/var/cache/dev/
 volumes/app/var/cache/.web-server-pid
+volumes/app/var/log/
 volumes/db/var/log/
 volumes/db/var/imports/
 volumes/ibbot/__pycache__/
+/volumes/bot2/
