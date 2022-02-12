@@ -4,4 +4,4 @@ volumes/app/var/log/
 volumes/db/var/log/
 volumes/db/var/imports/
 volumes/ibbot/__pycache__/
-/volumes/bot2/
+volumes/nodebot/
