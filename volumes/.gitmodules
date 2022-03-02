@@ -4,3 +4,6 @@
 [submodule "nodebot"]
         path = nodebot
         url = https://github.com/rylorin/portfolio-manager-nodebot.git
+[submodule "pybot"]
+        path = ibbot
+        url = https://github.com/rylorin/portfolio-manager-pybot.git
