@@ -1,3 +1,6 @@
-[submodule "pages"]
-	path = pages
+[submodule "app"]
+	path = app
 	url = https://github.com/rylorin/portfolio-manager-app.git
+[submodule "nodebot"]
+        path = nodebot
+        url = https://github.com/rylorin/portfolio-manager-nodebot.git
