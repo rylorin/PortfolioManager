@@ -1,9 +1,7 @@
 /volumes/app/
 /volumes/db/var/
-/ryl.diff
-/ryl.txt
-/ryl2.diff
-.DS_Store
-__pycache__
 /volumes/app.tar
 /volumes/nodebot/
+/volumes/ibbot/
+.DS_Store
+__pycache__
