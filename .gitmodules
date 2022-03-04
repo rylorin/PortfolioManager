@@ -1,9 +1,9 @@
 [submodule "app"]
-	path = app
+	path = volumes/app
 	url = https://github.com/rylorin/portfolio-manager-app.git
 [submodule "nodebot"]
-        path = nodebot
+        path = volumes/nodebot
         url = https://github.com/rylorin/portfolio-manager-nodebot.git
 [submodule "pybot"]
-        path = ibbot
+        path = volumes/ibbot
         url = https://github.com/rylorin/portfolio-manager-pybot.git
