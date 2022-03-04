@@ -5,5 +5,5 @@
         path = volumes/nodebot
         url = https://github.com/rylorin/portfolio-manager-nodebot.git
 [submodule "pybot"]
-        path = volumes/ibbot
+        path = volumes/ibbotX
         url = https://github.com/rylorin/portfolio-manager-pybot.git
